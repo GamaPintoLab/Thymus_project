@@ -1,0 +1,1497 @@
+### Helia's project data analysis
+### March 28th 2024 by MGC
+
+#DEG comparisons are made between chicken samples
+#All mesenchymes, PA (pharyngeal arches). 
+#New data are 2PA ventral to be compared with the other two conditions: 2PA dorsal and 3/4PA. 
+
+BiocManager::install("DESeq2")
+BiocManager::install("edgeR")
+BiocManager::install("limma")
+install.packages("pheatmap")
+install.packages("gplots")
+install.packages("matrixStats")
+
+BiocManager::install("GOfuncR")
+
+library(ggfortify)
+library(ggplot2)
+library(gplots)
+library(pheatmap)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library("DESeq2")
+library(edgeR)
+library(limma)
+library(reshape2)
+library("RColorBrewer")
+library(ComplexHeatmap)
+library(BiocGenerics)
+library(GOfuncR)
+
+setwd("~/Documents/Research/Helia_Neves/Data_analysis/2024_data")
+
+rawcounts_Gg <- read.table("total_counts.txt", header=TRUE, row.names = 1)
+
+dim(rawcounts_Gg)
+head(rawcounts_Gg)
+tail(rawcounts_Gg)
+
+colnames(rawcounts_Gg) <- c("Rep1_2PAv","Rep2_2PAv","Rep3_2PAv")
+
+#remove final lines with stats 
+
+Gg_table_clean <- rawcounts_Gg[1:24356, ]
+dim(Gg_table_clean)
+tail(Gg_table_clean)
+summary(Gg_table_clean)
+
+### if doing DE move to section on limma
+
+## detected genes per sample
+
+count.ND.per.column <- ldply(Gg_table_clean, function(c) sum(c=="0"))
+count.ND.per.column$total_genes <- 24356-count.ND.per.column$V1
+count.ND.per.column
+
+dim(count.ND.per.column)
+
+####Looking at density distributions
+data<- melt(Gg_table_clean)
+ggplot(data,aes(x=log10(value), colour=variable)) + geom_density()
+
+ggplot(data, aes(x=variable, y=log10(value), fill=variable)) + geom_boxplot()
+head(data)
+
+## Reading in old data (made file copies into wd)
+
+old_rawcounts_Gg <- read.table("Ggallus_counttable copy.txt", header=TRUE, row.names = 7)
+
+## Merging count tables
+
+Gg_table_clean <- rownames_to_column(Gg_table_clean, var= "geneID")
+old_rawcounts_Gg <- rownames_to_column(old_rawcounts_Gg, var= "geneID")
+
+Gg_table_full <- left_join(Gg_table_clean, old_rawcounts_Gg, by="geneID")
+
+dim(Gg_table_full)
+head (Gg_table_full)
+
+Gg_table_full <- column_to_rownames(Gg_table_full, var="geneID")
+
+head (Gg_table_full)
+
+write.csv(Gg_table_full, file="Gg_raw_counts_all_samples.csv")
+  
+## DeSeq data exploration
+
+coldata2 <- read.table("Gg_sample_info.txt", header=TRUE, row.names = 1)
+
+cts2 <- Gg_table_full
+
+dds2 <- DESeqDataSetFromMatrix(countData = cts2,
+                              colData = coldata2,
+                              design = ~ condition)
+
+dds2
+
+keep <- rowSums(counts(dds2)) >= 10
+dds2 <- dds2[keep,]
+
+vsd2 <- vst(dds2, blind=FALSE)
+
+plotPCA(vsd2, intgroup=c("condition", "replicate"))
+
+head(assay(vsd2), 3)
+
+norm_counts3 <- assay(vsd2)
+
+ntd2 <- normTransform(dds2)
+plotPCA(ntd2, intgroup=c("condition", "replicate"))
+
+norm_counts4 <- assay(ntd2)
+
+### NOT WORKING well!!
+sampleDists2 <- dist(t(assay(vsd2)))
+
+
+######## sample clustering analysis
+
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists2)
+rownames(sampleDistMatrix) <- paste(colnames(vsd2))
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists2,
+         clustering_distance_cols=sampleDists2,
+         col=colors)
+
+
+########## DE with limma voom
+library(limma)
+library(stringr) 
+library(edgeR)
+
+## NOT WORKING
+library(genefilter)
+
+
+
+table <- as.matrix(Gg_table_full)
+colnames(table) <- c("2PAv1","2PAv2","2PAv3","PAd_1", "PA_1", "PAd_2","PA_2", "PAd_3", "PA_3")
+head(table)
+class(table)
+colSums(table)
+
+##results
+##2PAv1   2PAv2   2PAv3   PAd_1    PA_1   PAd_2    PA_2   PAd_3    PA_3 
+##7393421 6223977 7465610 6178755 6078113 5947774 6611096 5797417 6324383 
+##>>use voom as primary method
+
+# Create DGEList object using the edgeR package:
+dge <- DGEList(counts=table)
+dim(dge)
+
+#######Define design matrix as in limma manual
+
+design <- model.matrix(~ 0+factor(c(1,1,1,2,3,2,3,2,3))) 
+colnames(design) <- c("PAv","PAd", "PA")
+design
+
+# Filter DGEList object:
+
+keep <- filterByExpr(dge, design)
+dge <- dge[keep,,keep.lib.sizes=FALSE]
+dim(dge)
+
+##goes from 24356 rows to 12167!!
+
+# apply scale normalization to RNA-seq read counts, and the TMM normalization method
+
+dge <- calcNormFactors(dge)
+
+plotMDS(dge)
+
+
+### Differential expression: voom
+
+v <- voom(dge, design=design, plot=TRUE)
+
+Gg_norm_counts <- v$E
+write.table(Gg_norm_counts, file="FUll_Gg_norm_counts.txt")
+dim(Gg_norm_counts)
+head(Gg_norm_counts)
+
+###### Loading GeneID annotation
+
+Gg_annot <- read.csv("manteia_Ggannot_mancor_08062023.csv", header=TRUE, na.strings = NA, sep = ";")
+
+Gg_annot <- Gg_annot[,1:2]
+Gg_annot <- Gg_annot[,c("Symbol", "Gene.ID")]
+dim(Gg_annot)
+# [1] 19054     2
+
+## annotating normalized count table
+
+Gg_norm_counts_table <- read.table(file="FUll_Gg_norm_counts.txt", header = TRUE)
+head (Gg_norm_counts_table)
+dim (Gg_norm_counts_table)
+# [1] 12167     9
+class (Gg_norm_counts_table)
+Gg_norm_counts_table2<- rownames_to_column(Gg_norm_counts_table, var="Gene.ID")
+Gg_norm_counts_table_ID <- inner_join(Gg_norm_counts_table2, Gg_annot, by = c( "Gene.ID" = "Gene.ID"))
+# [1] 10643    11
+
+# we are loosing 1524 genes that are not present in the manteia annotation!
+
+# checking the biomart annotation
+
+Gg_annot2 <- read.table("Gg_biomart_annotation.txt", header=TRUE, sep=",", na.strings="")
+dim(Gg_annot2)
+#[1] 24356     2
+ID_annot2 <- Gg_annot2$Gene.stable.ID
+
+ID_counttable <- Gg_norm_counts_table2$Gene.ID
+ID_counttable_annot <- Gg_norm_counts_table_ID$Gene.ID
+
+test_ID <- setdiff(ID_counttable,ID_counttable_annot)
+length(test_ID)
+
+test_ID2 <- intersect(test_ID,ID_annot2)
+length(test_ID2)
+
+# present in biomart annotation
+# will recover IDs and merge to final table
+
+Sub_annot <- Gg_annot2[Gg_annot2$Gene.stable.ID %in% test_ID2,]
+head(Sub_annot)
+colnames(Sub_annot) <- c("Gene.ID","Symbol")
+
+Gg_annot_merge <- bind_rows(Gg_annot,Sub_annot)
+dim(Gg_annot)
+# 20578     2
+
+write.table (Gg_annot_merge, file = "Gg_annotation_manteia_biomart_merge.txt")
+
+Gg_norm_counts_table_ID2 <- inner_join(Gg_norm_counts_table2, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+dim(Gg_norm_counts_table_ID2)
+# [1] 12167    11
+
+write.csv(Gg_norm_counts_table_ID2, file="Gg_norm_count_table.csv")
+
+
+### norm count plots
+
+library(reshape2)
+
+data_Gg<- melt(Gg_norm_counts)
+head(data_Gg)
+colnames(data_Gg) <- c("ID","Sample","Normalized_counts")
+ggplot(data_Gg,aes(x=log10(Normalized_counts), colour=Sample)) + geom_density()
+ggplot(data_Gg, aes(x=Sample, y=log10(Normalized_counts), fill=Sample)) + geom_boxplot()
+
+# Usual limma pipelines for differential expression
+
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+
+
+contrast.matrix <- makeContrasts(PAv-PAd, PAv-PA, PAd-PA, levels=design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+PAv_vs_PAd <- topTable(fit2, coef=1, p.value=0.01, number=nrow(fit))
+PAv_vs_PA <- topTable(fit2, coef=2, p.value=0.01, number=nrow(fit))
+PAd_vs_PA <- topTable(fit2, coef=3, p.value=0.01, number=nrow(fit))
+
+PAv_vs_PAd_FCfilter <- dplyr::filter(PAv_vs_PAd, logFC >0.6 | logFC <(-0.6))
+PAv_vs_PA_FCfilter <- dplyr::filter(PAv_vs_PA, logFC >0.6 | logFC <(-0.6))
+PAd_vs_PA_FCfilter <- dplyr::filter(PAd_vs_PA, logFC >0.6 | logFC <(-0.6))
+
+dim(PAv_vs_PAd_FCfilter)
+# 1209    6
+dim(PAv_vs_PA_FCfilter)
+# 1633    6
+dim(PAd_vs_PA_FCfilter)
+# 699   6
+
+summary(PAd_vs_PA)
+
+## Annotating Filtered DE tables
+### NOTE: THE CODE FOR PAv_vs_PAd AND PAv_vs_PA IS NOW REDUNDANT GIVEN THE GENERATION OF THE MERGED ANNOTATION ABOVE!!
+### HOWEVER, I CHOSE NOT TO CLEAN IT AS I HAVE NOT REGENERATED THE FILES AFTER THAT
+
+# PAv_vs_PAd
+PAv_vs_PAd_FCfilter<- rownames_to_column(PAv_vs_PAd_FCfilter, var="Gene.ID")
+PAv_vs_PAd_FCfilter_ID <- inner_join(PAv_vs_PAd_FCfilter, Gg_annot, by = c( "Gene.ID" = "Gene.ID"))
+
+dim(PAv_vs_PAd_FCfilter)
+
+ID_data <- PAv_vs_PAd_FCfilter$Gene.ID
+ID_annot <- Gg_annot$Gene.ID
+
+test_ID <- intersect(ID_data,ID_annot)
+length(test_ID)
+head(Gg_annot)
+test_ID2 <- setdiff(ID_data,test_ID)
+length(test_ID2)
+
+# we are loosing 196 genes that are not present in the manteia annotation!
+# checking the biomart annotation
+
+Gg_annot2 <- read.table("Gg_biomart_annotation.txt", header=TRUE, sep=",", na.strings="")
+head(Gg_annot2)
+ID_annot2 <- Gg_annot2$Gene.stable.ID
+test_ID3 <- intersect(test_ID2,ID_annot2)
+length(test_ID3)
+
+# present in biomart annotation
+# will recover IDs and merge to final table
+
+Sub_annot <- Gg_annot2[Gg_annot2$Gene.stable.ID %in% test_ID3,]
+head(Sub_annot)
+colnames(Sub_annot) <- c("Gene.ID","Symbol")
+
+Gg_annot_merge <- bind_rows(Gg_annot,Sub_annot)
+dim(Gg_annot_merge)
+# 19250 vs 19054 rows
+
+
+PAv_vs_PAd_FCfilter_ID_final <- inner_join(PAv_vs_PAd_FCfilter, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+dim(PAv_vs_PAd_FCfilter_ID_final)
+dim(PAv_vs_PAd_FCfilter)
+# now both with 1209
+
+write.csv(PAv_vs_PAd_FCfilter_ID_final, file="DE_PAv_vs_PAd_fullannot.csv")
+
+
+# PAv_vs_PA
+PAv_vs_PA_FCfilter<- rownames_to_column(PAv_vs_PA_FCfilter, var="Gene.ID")
+PAv_vs_PA_FCfilter_ID <- inner_join(PAv_vs_PA_FCfilter, Gg_annot, by = c( "Gene.ID" = "Gene.ID"))
+dim(PAv_vs_PA_FCfilter_ID)
+dim(PAv_vs_PA_FCfilter)
+
+ID_data <- PAv_vs_PA_FCfilter$Gene.ID
+ID_annot <- Gg_annot$Gene.ID
+
+test_ID <- intersect(ID_data,ID_annot)
+length(test_ID)
+head(Gg_annot)
+test_ID2 <- setdiff(ID_data,test_ID)
+length(test_ID2)
+
+# we are loosing 230 genes that are not present in the manteia annotation!
+# checking the biomart annotation
+
+Gg_annot2 <- read.table("Gg_biomart_annotation.txt", header=TRUE, sep=",", na.strings="")
+head(Gg_annot2)
+ID_annot2 <- Gg_annot2$Gene.stable.ID
+test_ID3 <- intersect(test_ID2,ID_annot2)
+length(test_ID3)
+
+# present in biomart annotation
+# will recover IDs and merge to final table
+
+Sub_annot <- Gg_annot2[Gg_annot2$Gene.stable.ID %in% test_ID3,]
+head(Sub_annot)
+colnames(Sub_annot) <- c("Gene.ID","Symbol")
+
+Gg_annot_merge <- bind_rows(Gg_annot,Sub_annot)
+dim(Gg_annot_merge)
+# 19294 vs 19054 rows
+
+PAv_vs_PA_FCfilter_ID_final <- inner_join(PAv_vs_PA_FCfilter, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+dim(PAv_vs_PA_FCfilter_ID_final)
+dim(PAv_vs_PA_FCfilter)
+# now both with 1633
+
+write.csv(PAv_vs_PA_FCfilter_ID_final, file="DE_PAv_vs_PA_fullannot.csv")
+
+
+# PAd_vs_PA
+# This code/annotation is corrected to the last version as mentioned above
+
+PAd_vs_PA_FCfilter<- rownames_to_column(PAd_vs_PA_FCfilter, var="Gene.ID")
+PAd_vs_PA_FCfilter_ID <- inner_join(PAd_vs_PA_FCfilter, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+dim(PAd_vs_PA_FCfilter_ID)
+dim(PAd_vs_PA_FCfilter)
+
+write.csv(PAd_vs_PA_FCfilter_ID_final, file="DE_PAd_vs_PA_fullannot.csv")
+
+
+## full data for volcano plots
+coef1 <- topTable(fit2, coef=1, sort="none", n=Inf)
+df1 <- coef1[,c("logFC","adj.P.Val")]
+summary(df1)
+# FC between -8.9 and 7.2
+# Min adj pval 4.6e-8
+
+PAv_vs_PAd_DEanal <- rownames_to_column(df1, var="Gene.ID")
+head(PAv_vs_PAd_DEanal)
+
+coef2 <- topTable(fit2, coef=2, sort="none", n=Inf)
+df2 <- coef2[,c("logFC","adj.P.Val")]
+summary(df2)
+# FC between -9.1 and 4
+# Min adj pval 3.3e-9
+
+PAv_vs_PA_DEanal <- rownames_to_column(df2, var="Gene.ID")
+
+head(PAv_vs_PA_DEanal)
+
+coef3 <- topTable(fit2, coef=3, sort="none", n=Inf)
+df3 <- coef3[,c("logFC","adj.P.Val")]
+summary(df3)
+# FC between -9.5 and 9.3
+# Min adj pval 1.2 e-08
+
+PAd_vs_PA_DEanal <- rownames_to_column(df3, var="Gene.ID")
+
+## annotating DE anal for volcanos
+
+PAv_vs_PAd_DEanal_ID <- inner_join(PAv_vs_PAd_DEanal, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+PAv_vs_PA_DEanal_ID <- inner_join(PAv_vs_PA_DEanal, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+PAd_vs_PA_DEanal_ID <- inner_join(PAd_vs_PA_DEanal, Gg_annot_merge, by = c( "Gene.ID" = "Gene.ID"))
+
+write.csv(PAv_vs_PAd_DEanal_ID, file="PAv_vs_PAd_DEanal_unfiltered.csv")
+write.csv(PAv_vs_PA_DEanal_ID, file="PAv_vs_PA_DEanal_unfiltered.csv")
+write.csv(PAd_vs_PA_DEanal_ID, file="PAd_vs_PA_DEanal_unfiltered.csv")
+
+
+
+## volcano plots
+
+library(EnhancedVolcano)
+
+
+#var_df1 <- c("SIX1","SIX2","EYA1","RGMA","FST","OLFM1","WIF1",
+#             "AXIN2","LEF1","NKX2.5","GATA4","SMAD6","RARA","EPHA4","TBX2","TBX3",
+#             "TBX5","MEIS1","MEIS2","WNT2","WNT5","TGM2","FN1","HOXA3","HOXA4","HOXA5",
+#            "HOXB1", "HOXB2","HOXB3", "HOXB4","HOXC4","HOXD3","HOXD4") 
+
+my_colors1 = c("black","grey40","grey40","#F15757")
+
+#PAv_vs_PAd
+
+EnhancedVolcano(PAv_vs_PAd_DEanal_ID,
+                lab = PAv_vs_PAd_DEanal_ID$Symbol,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                ylim = c(0, max(8, na.rm = TRUE)),
+                xlim = c(-9, max(9, na.rm = TRUE)),
+                axisLabSize = 18,
+                title = 'PAv vs PAd',
+                subtitle = '',
+                titleLabSize = 16,
+                xlab = bquote(~Log[2]~ 'fold change'),
+                pointSize = 1.2,
+                #selectLab = var_df1,
+                labSize = 5.0,
+                pCutoff = 1e-02,
+                FCcutoff = 0.6,
+                col = my_colors1,
+                legendPosition = 'right',
+                legendLabSize = 14,
+                legendIconSize = 4.0)
+
+
+
+#saved with 1000x1000
+#PAv_vs_PAd_volcano
+
+## Check FC direction
+# PAv vs PAd
+
+test <- Gg_norm_counts_table_ID[Gg_norm_counts_table_ID$Symbol %in% "HAND2",]
+test
+
+#2PAv1    2PAv2    2PAv3     PAd_1    PAd_2       PAd_3      Symbol
+#6.073665 6.022164 6.213363 -1.273227 -0.1187008  -1.930692   HAND2
+
+### Upreg in volcano/DE anal is Upreg in PAv
+
+
+#PAv_vs_PA
+
+EnhancedVolcano(PAv_vs_PA_DEanal_ID,
+                lab = PAv_vs_PA_DEanal_ID$Symbol,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                ylim = c(0, max(8, na.rm = TRUE)),
+                xlim = c(-9.5, max(9.5, na.rm = TRUE)),
+                axisLabSize = 18,
+                title = 'PAv vs PA',
+                subtitle = '',
+                titleLabSize = 16,
+                xlab = bquote(~Log[2]~ 'fold change'),
+                pointSize = 1.2,
+                #selectLab = var_df1,
+                labSize = 5.0,
+                pCutoff = 1e-02,
+                FCcutoff = 0.6,
+                col = my_colors1,
+                legendPosition = 'right',
+                legendLabSize = 14,
+                legendIconSize = 4.0)
+
+
+
+#saved with 1000x1000
+#PAv_vs_PA_volcano
+
+## Check FC direction
+# PAv vs PA
+
+test <- Gg_norm_counts_table_ID[Gg_norm_counts_table_ID$Symbol %in% "TBX5",]
+test
+
+#   2PAv1    2PAv2    2PAv3     PA_1    PA_2       PA_3      Symbol
+#-3.870314 -3.634261 -2.301022 5.907386 5.669333  6.163808   TBX5
+
+### Downreg in volcano/DE anal is Downreg in PAv
+
+
+
+#PAd_vs_PA
+
+EnhancedVolcano(PAd_vs_PA_DEanal_ID,
+                lab = PAd_vs_PA_DEanal_ID$Symbol,
+                x = 'logFC',
+                y = 'adj.P.Val',
+                ylim = c(0, max(8, na.rm = TRUE)),
+                xlim = c(-9.5, max(9.5, na.rm = TRUE)),
+                axisLabSize = 18,
+                title = 'PAd vs PA',
+                subtitle = '',
+                titleLabSize = 16,
+                xlab = bquote(~Log[2]~ 'fold change'),
+                pointSize = 1.2,
+                #selectLab = var_df1,
+                labSize = 5.0,
+                pCutoff = 1e-02,
+                FCcutoff = 0.6,
+                col = my_colors1,
+                legendPosition = 'right',
+                legendLabSize = 14,
+                legendIconSize = 4.0)
+
+
+
+#saved with 1000x1000
+#PAv_vs_PA_volcano
+
+## Check FC direction
+# PAd vs PA
+
+test <- Gg_norm_counts_table_ID[Gg_norm_counts_table_ID$Symbol %in% "ZIC1",]
+test
+
+#   PAd_1      PA_1   PAd_2      PA_2    PAd_3      PA_3    Symbol
+# 5.837387 -3.606342 5.74154 -3.754834 5.376129 -3.686379   ZIC1
+
+### Upreg in volcano/DE anal is Upreg in PAd
+
+
+#####################################
+#### Heatmap for (all) DE genes
+## retrieving identifiers for DE genes
+
+PAv_vs_PA <- read.csv(file="DE_PAv_vs_PA_fullannot.csv", header=TRUE)
+PAv_vs_PAd <- read.csv(file="DE_PAv_vs_PAd_fullannot.csv", header=TRUE)
+PAd_vs_PA <- read.csv(file="DE_PAd_vs_PA_fullannot.csv", header=TRUE)
+
+
+PA_vs_PAd_genes <- PAd_vs_PA$Gene.ID
+#699 
+PAv_vs_PAd_genes <- PAv_vs_PAd$Gene.ID
+#1209
+PAv_vs_PA_genes <- PAv_vs_PA$Gene.ID
+#1633
+
+GgDE_genes <- unique(c(PA_vs_PAd_genes,PAv_vs_PAd_genes,PAv_vs_PA_genes))
+
+length(GgDE_genes)
+#2252
+
+Gg_norm_counts <- read.csv(file="Gg_norm_count_table.csv", header = TRUE)
+Gg_norm_counts <- column_to_rownames(Gg_norm_counts,var="Gene.ID")
+head(Gg_norm_counts)
+
+Gg_norm_counts <- Gg_norm_counts[,2:10]
+colnames(Gg_norm_counts) <- c("2PAv1", "2PAv2", "2PAv3", "2PAd_1",  "3/4PA_1",   "2PAd_2",  "3/4PA_2", "2PAd_3",  "3/4PA_3")  
+
+Gg_DE_heatmap <- as.matrix(subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% GgDE_genes))
+
+dim(Gg_DE_heatmap)
+
+
+pheatmap::pheatmap(Gg_DE_heatmap,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14, cutree_rows = 8)
+
+## "ward.D", "ward.D2", "single", "complete", "average" (= UPGMA), "mcquitty" (= WPGMA), "median" (= WPGMC) or "centroid" (= UPGMC).
+
+
+#saved with 800x1000 as Full_Gg_heatmap (Complex heatmap version) Gg_pheatmap_full_cluster (pheatmap version)
+
+######
+##Extracting gene clusters
+pheatmap::pheatmap(Gg_DE_heatmap,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14, cutree_rows = 8)
+
+clusters <- sort(cutree(out$tree_row, k=8))
+
+
+cluster1 <- clusters[clusters==1]
+length(cluster1)
+cluster1[1:10]
+#366 
+cluster2 <- clusters[clusters==2]
+length(cluster2)
+#400
+cluster3 <- clusters[clusters==3]
+length(cluster3)
+#211
+cluster4 <- clusters[clusters==4]
+length(cluster4)
+#504
+cluster5 <- clusters[clusters==5]
+length(cluster5)
+#155
+cluster6 <- clusters[clusters==6]
+length(cluster6)
+#165
+cluster7 <- clusters[clusters==7]
+length(cluster7)
+#152
+cluster8 <- clusters[clusters==8]
+length(cluster8)
+#299
+
+# total genes = 2252
+
+c1 <- as.data.frame(cluster1)
+d1 <- rownames(c1)
+heatmapc1 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d1)
+pheatmap::pheatmap(heatmapc1,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+
+#### NOTES: 
+## clusters do not come in the same order as you see in heatmap
+## d variable contians ensemble identifiers of genes in clusters
+## matching the clusters requires annotating the heatmap based on the image of the cluster
+## I can make a dataframe with each column corresponding to a cluster and then convert the annotations to symbol using mutate
+
+c2 <- as.data.frame(cluster2)
+d2 <- rownames(c2)
+heatmapc2 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d2)
+pheatmap::pheatmap(heatmapc2,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+c3 <- as.data.frame(cluster3)
+d3 <- rownames(c3)
+heatmapc3 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d3)
+pheatmap::pheatmap(heatmapc3,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+c4 <- as.data.frame(cluster4)
+d4 <- rownames(c4)
+heatmapc4 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d4)
+pheatmap::pheatmap(heatmapc4,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+c5 <- as.data.frame(cluster5)
+d5 <- rownames(c5)
+heatmapc5 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d5)
+pheatmap::pheatmap(heatmapc5,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+c6 <- as.data.frame(cluster6)
+d6 <- rownames(c6)
+heatmapc6 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d6)
+pheatmap::pheatmap(heatmapc6,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+
+c7 <- as.data.frame(cluster7)
+d7 <- rownames(c7)
+heatmapc7 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d7)
+pheatmap::pheatmap(heatmapc7,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+c8 <- as.data.frame(cluster8)
+d8 <- rownames(c8)
+heatmapc8 <- subset(Gg_norm_counts, rownames(Gg_norm_counts) %in% d8)
+pheatmap::pheatmap(heatmapc8,scale="row",clustering_method = "ward.D",  show_rownames=FALSE, fontsize=14)
+
+#correspondance of clusters annotated in ppt file
+
+## Cluster annotation
+
+cluster_vectors <- list(Cluster1=d1,Cluster2=d2,Cluster3=d3,Cluster4=d4,Cluster5=d5,Cluster6=d6,Cluster7=d7,Cluster8=d8)
+
+PAv_vs_PA1 <- rename(PAv_vs_PA, X="DE_anal")
+PAv_vs_PA1 <- mutate(PAv_vs_PA1, DE_anal="PAv_vs_PA")
+
+PAv_vs_PAd1 <- rename(PAv_vs_PAd, X="DE_anal")
+PAv_vs_PAd1 <- mutate(PAv_vs_PAd1, DE_anal="PAv_vs_PAd")
+
+PAd_vs_PA1 <- rename(PAd_vs_PA, X="DE_anal")
+PAd_vs_PA1 <- mutate(PAd_vs_PA1, DE_anal="PAd_vs_PA")
+  
+All_heatmap_genes <- bind_rows(PAv_vs_PA1,PAv_vs_PAd1,PAd_vs_PA1)
+
+
+Anot_all_heatmap_genes <- All_heatmap_genes %>%
+  mutate(ClusterID = case_when(
+    Gene.ID %in% cluster_vectors$Cluster1 ~ "Cluster 1",
+    Gene.ID %in% cluster_vectors$Cluster2 ~ "Cluster 2",
+    Gene.ID %in% cluster_vectors$Cluster3 ~ "Cluster 3",
+    Gene.ID %in% cluster_vectors$Cluster4 ~ "Cluster 4",
+    Gene.ID %in% cluster_vectors$Cluster5 ~ "Cluster 5",
+    Gene.ID %in% cluster_vectors$Cluster6 ~ "Cluster 6",
+    Gene.ID %in% cluster_vectors$Cluster7 ~ "Cluster 7",
+    Gene.ID %in% cluster_vectors$Cluster8 ~ "Cluster 8",
+    TRUE ~ NA_character_
+  ))
+
+write.csv(Anot_all_heatmap_genes, file="Anot_all_heatmap_genes.csv")
+
+dim(final_cluster_genes)
+
+cluster_genes <- dplyr::select(Anot_all_heatmap_genes, Gene.ID, Symbol, ClusterID)
+
+final_cluster_genes <- distinct(cluster_genes, Gene.ID, Symbol, ClusterID)
+write.csv(final_cluster_genes, file="final_cluster_genes.csv")
+
+#################################
+
+## HOX gene heatmap in Gg
+
+#read data
+Gg_norm_counts <- read.csv(file="Gg_norm_count_table.csv", header = TRUE)
+
+head(Gg_norm_counts)
+
+# filter for HOX genes
+
+Gg_HOX <- Gg_norm_counts %>% dplyr::filter (grepl("HOX", Symbol))
+Gg_HOX_sorted <- Gg_HOX %>% arrange (Symbol)
+head (Gg_HOX_sorted)
+dim (Gg_HOX_sorted)
+#[1] 14 12
+
+#clean and annotate table for heatmap
+Gg_HOX_cluster <- Gg_HOX_sorted[1:13,3:12]
+Gg_HOX_cluster <- column_to_rownames(Gg_HOX_cluster, var="Symbol")
+colnames(Gg_HOX_cluster) <- c("2PAv1", "2PAv2", "2PAv3", "2PAd_1",  "3/4PA_1",   "2PAd_2",  "3/4PA_2", "2PAd_3",  "3/4PA_3")  
+
+
+pheatmap(as.matrix(Gg_HOX_cluster),scale="row",clustering_method = "ward.D2", cluster_rows = FALSE)
+## "ward.D", "ward.D2", "single", "complete", "average" (= UPGMA), "mcquitty" (= WPGMA), "median" (= WPGMC) or "centroid" (= UPGMC).
+
+#saved with 900 x 400
+
+
+###### GO_term_anal
+## Apr 18th 2024
+
+BiocManager::install("GOfuncR")
+library(GOfuncR)
+
+setwd("~/Documents/Research/Helia_Neves/Data_analysis/2024_data")
+
+##https://www.bioconductor.org/packages/release/bioc/vignettes/GOfuncR/inst/doc/GOfuncR.html
+
+#For Gg
+## create data.frame will all detected genes and mark candidates vs background
+#Get all genes
+
+Gg_norm_counts <- read.table("FULL_Gg_norm_counts.txt", header=TRUE, row.names =1)
+head (Gg_norm_counts)
+All_Gg_genes <- row.names(Gg_norm_counts)
+
+#create GO annotation table
+Gg_annotation <- read.csv("Gg_GOannot.txt", header=TRUE, na.strings = "")
+head (Gg_annotation)
+colnames(Gg_annotation)<-c("gene", "go_id")
+
+Gg_annotation <- na.omit(Gg_annotation)
+
+# create Symbol annotation table
+
+Symbol_anot <- read.table("Gg_annotation_manteia_biomart_merge.txt", header=TRUE, na.strings = NA)
+head(Symbol_anot)
+colnames(Symbol_anot) <- c("Symbol","ensembl")
+
+##Get DE genes
+# PAv_vs_PA
+
+Gg_DE1 <- read.csv("DE_PAv_vs_PA_fullannot.csv", header=TRUE, sep=",")
+head (Gg_DE1)
+DE1_Gg_genes <- Gg_DE1$Gene.ID
+
+#for up-reg/down-reg genes
+
+DE1_Gg_genesUP <- Gg_DE1[Gg_DE1$logFC >0,]
+DE1_Gg_genesUP_list <- DE1_Gg_genesUP$Gene.ID
+
+DE1_Gg_genesDOWN <- Gg_DE1[Gg_DE1$logFC <0,]
+DE1_Gg_genesDOWN_list <- DE1_Gg_genesDOWN$Gene.ID
+
+#Create table for anal
+is_candidate1 <- All_Gg_genes %in% DE1_Gg_genes
+is_candidateUP1 <- All_Gg_genes %in% DE1_Gg_genesUP_list
+is_candidateDOWN1 <- All_Gg_genes %in% DE1_Gg_genesDOWN_list
+
+summary(is_candidate1)
+
+#All
+Gg_gene_table1 <- data.frame(All_Gg_genes, is_candidate1)
+head(Gg_gene_table1)
+colnames(Gg_gene_table1) <- c("gene_ids","is_candidate")
+
+Gg_gene_table1 <- Gg_gene_table1 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+head(Gg_gene_table)
+
+#UP
+GgUP_gene_table1 <- data.frame(All_Gg_genes, is_candidateUP1)
+colnames(GgUP_gene_table1) <- c("gene_ids","is_candidate")
+GgUP_gene_table1 <- GgUP_gene_table1 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+
+#DOWN
+GgDOWN_gene_table1 <- data.frame(All_Gg_genes, is_candidateDOWN1)
+colnames(GgDOWN_gene_table1) <- c("gene_ids","is_candidate")
+GgDOWN_gene_table1 <- GgDOWN_gene_table1 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+
+
+
+####run GO enrichment
+
+##All
+
+Gg_res_hyper_anno1 = go_enrich(Gg_gene_table1, annotations=Gg_annotation)
+statsGg1 = Gg_res_hyper_anno1[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_ALLgenes_GO=subset(statsGg,FWER_overrep<=0.05)
+Gg_ALLgenes_GOID = get_anno_genes(go_ids=Gg_ALLgenes_GO$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                  annotations=Gg_annotation)
+Gg_ALLgenes_GOID=cbind(Gg_ALLgenes_GOID, "GOname"=0)
+Gg_ALLgenes_GOID$GOname=Gg_ALLgenes_GO$node_name[match(Gg_ALLgenes_GOID$go_id, Gg_ALLgenes_GO$node_id)]
+colnames(Gg_ALLgenes_GOID) <- c("go_id","ensembl","GOname")
+head(Gg_ALLgenes_GOID)
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_data <- Gg_ALLgenes_GO[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_data) <- c("ontology","go_id","GOname","FWER")
+anot_GOanal <- merge(GO_data,Gg_ALLgenes_GOID)
+
+# add Symbol annotation
+anot_GOanal <- inner_join(anot_GOanal, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanal <- anot_GOanal %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanal, file="PAv_vs_PA_GOterm_anal.txt")
+
+
+##for UP
+
+GgUP_res_hyper_anno1 = go_enrich(GgUP_gene_table1, annotations=Gg_annotation)
+statsGgUP1 = GgUP_res_hyper_anno1[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_UPgenes_GO=subset(statsGgUP1,FWER_overrep<=0.05)
+Gg_UPgenes_GOID = get_anno_genes(go_ids=Gg_UPgenes_GO$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                  annotations=Gg_annotation)
+Gg_UPgenes_GOID=cbind(Gg_UPgenes_GOID, "GOname"=0)
+Gg_UPgenes_GOID$GOname=Gg_UPgenes_GO$node_name[match(Gg_UPgenes_GOID$go_id, Gg_UPgenes_GO$node_id)]
+colnames(Gg_UPgenes_GOID) <- c("go_id","ensembl","GOname")
+head(Gg_UPgenes_GOID)
+
+### Merged data with symbol annotation
+## UP genes
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_dataUP <- Gg_UPgenes_GO[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_dataUP) <- c("ontology","go_id","GOname","FWER")
+anot_GOanalUP <- merge(GO_dataUP,Gg_UPgenes_GOID)
+
+head(anot_GOanalUP)
+
+# add Symbol annotation
+anot_GOanalUP <- inner_join(anot_GOanalUP, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanalUP <- anot_GOanalUP %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanalUP, file="PAv_vs_PA_UP_GOterm_anal.txt")
+
+###########
+###for down
+
+GgDOWN_res_hyper_anno1 = go_enrich(GgDOWN_gene_table1, annotations=Gg_annotation)
+statsGgDOWN1 = GgDOWN_res_hyper_anno1[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_DOWNgenes_GO=subset(statsGgDOWN1,FWER_overrep<=0.05)
+Gg_DOWNgenes_GOID = get_anno_genes(go_ids=Gg_DOWNgenes_GO$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                  annotations=Gg_annotation)
+Gg_DOWNgenes_GOID=cbind(Gg_DOWNgenes_GOID, "GOname"=0)
+Gg_DOWNgenes_GOID$GOname=Gg_DOWNgenes_GO$node_name[match(Gg_DOWNgenes_GOID$go_id, Gg_DOWNgenes_GO$node_id)]
+colnames(Gg_DOWNgenes_GOID) <- c("go_id","ensembl","GOname")
+head(Gg_DOWNgenes_GOID)
+
+### Merged data with symbol annotation
+## DOWN genes
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_dataDOWN <- Gg_DOWNgenes_GO[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_dataDOWN) <- c("ontology","go_id","GOname","FWER")
+anot_GOanalDOWN <- merge(GO_dataDOWN,Gg_DOWNgenes_GOID)
+
+head(anot_GOanalDOWN)
+
+# add Symbol annotation
+anot_GOanalDOWN <- inner_join(anot_GOanalDOWN, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanalDOWN <- anot_GOanalDOWN %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanalDOWN, file="PAv_vs_PA_DOWN_GOterm_anal.txt")
+
+
+# Get DE genes
+## PAv_vs_PAd
+
+Gg_DE2 <- read.csv("DE_PAv_vs_PAd_fullannot.csv", header=TRUE, sep=",")
+head (Gg_DE2)
+DE2_Gg_genes <- Gg_DE2$Gene.ID
+
+#for up-reg/down-reg genes
+
+DE2_Gg_genesUP <- Gg_DE2[Gg_DE2$logFC >0,]
+DE2_Gg_genesUP_list <- DE2_Gg_genesUP$Gene.ID
+
+DE2_Gg_genesDOWN <- Gg_DE2[Gg_DE2$logFC <0,]
+DE2_Gg_genesDOWN_list <- DE2_Gg_genesDOWN$Gene.ID
+
+#Create table for anal
+is_candidate2 <- All_Gg_genes %in% DE2_Gg_genes
+is_candidateUP2 <- All_Gg_genes %in% DE2_Gg_genesUP_list
+is_candidateDOWN2 <- All_Gg_genes %in% DE2_Gg_genesDOWN_list
+
+summary(is_candidate2)
+
+#All
+Gg_gene_table2 <- data.frame(All_Gg_genes, is_candidate2)
+head(Gg_gene_table2)
+colnames(Gg_gene_table2) <- c("gene_ids","is_candidate")
+
+Gg_gene_table2 <- Gg_gene_table2 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+head(Gg_gene_table2)
+
+#UP
+GgUP_gene_table2 <- data.frame(All_Gg_genes, is_candidateUP2)
+colnames(GgUP_gene_table2) <- c("gene_ids","is_candidate")
+GgUP_gene_table2 <- GgUP_gene_table2 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+
+#DOWN
+GgDOWN_gene_table2 <- data.frame(All_Gg_genes, is_candidateDOWN2)
+colnames(GgDOWN_gene_table2) <- c("gene_ids","is_candidate")
+GgDOWN_gene_table2 <- GgDOWN_gene_table2 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+
+
+####run GO enrichment
+
+Gg_res_hyper_anno2 = go_enrich(Gg_gene_table2, annotations=Gg_annotation)
+statsGg2 = Gg_res_hyper_anno2[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_ALLgenes_GO2=subset(statsGg2,FWER_overrep<=0.05)
+Gg_ALLgenes_GOID2 = get_anno_genes(go_ids=Gg_ALLgenes_GO2$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                  annotations=Gg_annotation)
+Gg_ALLgenes_GOID2=cbind(Gg_ALLgenes_GOID2, "GOname"=0)
+Gg_ALLgenes_GOID2$GOname=Gg_ALLgenes_GO2$node_name[match(Gg_ALLgenes_GOID2$go_id, Gg_ALLgenes_GO2$node_id)]
+colnames(Gg_ALLgenes_GOID2) <- c("go_id","ensembl","GOname")
+head(Gg_ALLgenes_GOID2)
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_data2 <- Gg_ALLgenes_GO2[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_data2) <- c("ontology","go_id","GOname","FWER")
+anot_GOanal2 <- merge(GO_data2,Gg_ALLgenes_GOID2)
+
+# add Symbol annotation
+anot_GOanal2 <- inner_join(anot_GOanal2, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+test3anot_GOanal2 <- test2anot_GOanal2 %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanal2, file="PAv_vs_PAd_GOterm_anal.txt")
+
+
+###for up
+
+GgUP_res_hyper_anno2 = go_enrich(GgUP_gene_table2, annotations=Gg_annotation)
+statsGgUP2 = GgUP_res_hyper_anno2[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_UPgenes_GO2=subset(statsGgUP2,FWER_overrep<=0.05)
+Gg_UPgenes_GOID2 = get_anno_genes(go_ids=Gg_UPgenes_GO2$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                 annotations=Gg_annotation)
+Gg_UPgenes_GOID2=cbind(Gg_UPgenes_GOID2, "GOname"=0)
+Gg_UPgenes_GOID2$GOname=Gg_UPgenes_GO2$node_name[match(Gg_UPgenes_GOID2$go_id, Gg_UPgenes_GO2$node_id)]
+colnames(Gg_UPgenes_GOID2) <- c("go_id","ensembl","GOname")
+head(Gg_UPgenes_GOID2)
+
+### Merged data with symbol annotation
+## UP genes
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_dataUP2 <- Gg_UPgenes_GO2[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_dataUP2) <- c("ontology","go_id","GOname","FWER")
+anot_GOanalUP2 <- merge(GO_dataUP2,Gg_UPgenes_GOID2)
+
+head(anot_GOanalUP2)
+
+# add Symbol annotation
+anot_GOanalUP2 <- inner_join(anot_GOanalUP2, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanalUP2 <- anot_GOanalUP2 %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanalUP2, file="PAv_vs_PAd_UP_GOterm_anal.txt")
+
+
+#####for down
+
+GgDOWN_res_hyper_anno2 = go_enrich(GgDOWN_gene_table2, annotations=Gg_annotation)
+statsGgDOWN2 = GgDOWN_res_hyper_anno2[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_DOWNgenes_GO2=subset(statsGgDOWN2,FWER_overrep<=0.05)
+Gg_DOWNgenes_GOID2 = get_anno_genes(go_ids=Gg_DOWNgenes_GO2$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                   annotations=Gg_annotation)
+Gg_DOWNgenes_GOID2=cbind(Gg_DOWNgenes_GOID2, "GOname"=0)
+Gg_DOWNgenes_GOID2$GOname=Gg_DOWNgenes_GO2$node_name[match(Gg_DOWNgenes_GOID2$go_id, Gg_DOWNgenes_GO2$node_id)]
+colnames(Gg_DOWNgenes_GOID2) <- c("go_id","ensembl","GOname")
+head(Gg_DOWNgenes_GOID2)
+
+### Merged data with symbol annotation
+## DOWN genes
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_dataDOWN2 <- Gg_DOWNgenes_GO2[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_dataDOWN2) <- c("ontology","go_id","GOname","FWER")
+anot_GOanalDOWN2 <- merge(GO_dataDOWN2,Gg_DOWNgenes_GOID2)
+
+head(anot_GOanalDOWN2)
+
+# add Symbol annotation
+anot_GOanalDOWN2 <- inner_join(anot_GOanalDOWN2, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanalDOWN2 <- anot_GOanalDOWN2 %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanalDOWN2, file="PAv_vs_PAd_DOWN_GOterm_anal.txt")
+
+
+######### 
+## PAd_vs_PA
+#Get DE genes
+
+Gg_DE3 <- read.csv("DE_PAd_vs_PA_fullannot.csv", header=TRUE, sep=",")
+head (Gg_DE3)
+DE3_Gg_genes <- Gg_DE3$Gene.ID
+
+#for up-reg/down-reg genes
+
+DE3_Gg_genesUP <- Gg_DE3[Gg_DE3$logFC >0,]
+DE3_Gg_genesUP_list <- DE3_Gg_genesUP$Gene.ID
+
+DE3_Gg_genesDOWN <- Gg_DE3[Gg_DE3$logFC <0,]
+DE3_Gg_genesDOWN_list <- DE3_Gg_genesDOWN$Gene.ID
+
+#Create table for anal
+is_candidate3 <- All_Gg_genes %in% DE3_Gg_genes
+is_candidateUP3 <- All_Gg_genes %in% DE3_Gg_genesUP_list
+is_candidateDOWN3 <- All_Gg_genes %in% DE3_Gg_genesDOWN_list
+
+summary(is_candidate3)
+
+#All
+Gg_gene_table3 <- data.frame(All_Gg_genes, is_candidate3)
+head(Gg_gene_table3)
+colnames(Gg_gene_table3) <- c("gene_ids","is_candidate")
+
+Gg_gene_table3 <- Gg_gene_table3 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+head(Gg_gene_table3)
+
+#UP
+GgUP_gene_table3 <- data.frame(All_Gg_genes, is_candidateUP3)
+colnames(GgUP_gene_table3) <- c("gene_ids","is_candidate")
+GgUP_gene_table3 <- GgUP_gene_table3 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+
+#DOWN
+GgDOWN_gene_table3 <- data.frame(All_Gg_genes, is_candidateDOWN3)
+colnames(GgDOWN_gene_table3) <- c("gene_ids","is_candidate")
+GgDOWN_gene_table3 <- GgDOWN_gene_table3 %>% mutate(is_candidate=case_when(is_candidate=="TRUE"~ 1, is_candidate=="FALSE"~ 0))
+
+
+
+####run GO enrichment
+
+Gg_res_hyper_anno3 = go_enrich(Gg_gene_table3, annotations=Gg_annotation)
+statsGg3 = Gg_res_hyper_anno3[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_ALLgenes_GO3=subset(statsGg3,FWER_overrep<=0.05)
+Gg_ALLgenes_GOID3 = get_anno_genes(go_ids=Gg_ALLgenes_GO3$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                   annotations=Gg_annotation)
+Gg_ALLgenes_GOID3=cbind(Gg_ALLgenes_GOID3, "GOname"=0)
+Gg_ALLgenes_GOID3$GOname=Gg_ALLgenes_GO3$node_name[match(Gg_ALLgenes_GOID3$go_id, Gg_ALLgenes_GO3$node_id)]
+colnames(Gg_ALLgenes_GOID3) <- c("go_id","ensembl","GOname")
+head(Gg_ALLgenes_GOID3)
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_data3 <- Gg_ALLgenes_GO3[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_data3) <- c("ontology","go_id","GOname","FWER")
+anot_GOanal3 <- merge(GO_data3,Gg_ALLgenes_GOID3)
+
+# add Symbol annotation
+anot_GOanal3 <- inner_join(anot_GOanal3, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanal3 <- anot_GOanal3 %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanal3, file="PAd_vs_PA_GOterm_anal.txt")
+
+
+####for up
+
+GgUP_res_hyper_anno3 = go_enrich(GgUP_gene_table3, annotations=Gg_annotation)
+statsGgUP3 = GgUP_res_hyper_anno3[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_UPgenes_GO3=subset(statsGgUP3,FWER_overrep<=0.05)
+Gg_UPgenes_GOID3 = get_anno_genes(go_ids=Gg_UPgenes_GO3$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                  annotations=Gg_annotation)
+Gg_UPgenes_GOID3=cbind(Gg_UPgenes_GOID3, "GOname"=0)
+Gg_UPgenes_GOID3$GOname=Gg_UPgenes_GO3$node_name[match(Gg_UPgenes_GOID3$go_id, Gg_UPgenes_GO3$node_id)]
+colnames(Gg_UPgenes_GOID3) <- c("go_id","ensembl","GOname")
+head(Gg_UPgenes_GOID3)
+
+### Merged data with symbol annotation
+## UP genes
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_dataUP3 <- Gg_UPgenes_GO3[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_dataUP3) <- c("ontology","go_id","GOname","FWER")
+anot_GOanalUP3 <- merge(GO_dataUP3,Gg_UPgenes_GOID3)
+
+head(anot_GOanalUP3)
+
+# add Symbol annotation
+anot_GOanalUP3 <- inner_join(anot_GOanalUP3, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanalUP3 <- anot_GOanalUP3 %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanalUP3, file="PAd_vs_PA_UP_GOterm_anal.txt")
+
+
+###### for down
+GgDOWN_res_hyper_anno3 = go_enrich(GgDOWN_gene_table3, annotations=Gg_annotation)
+statsGgDOWN3 = GgDOWN_res_hyper_anno3[[1]]
+
+# Retrieve significant GOs and GO annotations  
+Gg_DOWNgenes_GO3=subset(statsGgDOWN3,FWER_overrep<=0.05)
+Gg_DOWNgenes_GOID3 = get_anno_genes(go_ids=Gg_DOWNgenes_GO3$node_id,genes=subset(Gg_annotation,sel=1)$gene_ids,
+                                    annotations=Gg_annotation)
+Gg_DOWNgenes_GOID3=cbind(Gg_DOWNgenes_GOID3, "GOname"=0)
+Gg_DOWNgenes_GOID3$GOname=Gg_DOWNgenes_GO3$node_name[match(Gg_DOWNgenes_GOID3$go_id, Gg_DOWNgenes_GO3$node_id)]
+colnames(Gg_DOWNgenes_GOID3) <- c("go_id","ensembl","GOname")
+head(Gg_DOWNgenes_GOID3)
+
+### Merged data with symbol annotation
+## DOWN genes
+
+# merge GO anal table for DE genes with ensemble Gene IDs
+
+GO_dataDOWN3 <- Gg_DOWNgenes_GO3[,c("ontology","node_id","node_name","FWER_overrep")]
+colnames(GO_dataDOWN3) <- c("ontology","go_id","GOname","FWER")
+anot_GOanalDOWN3 <- merge(GO_dataDOWN3,Gg_DOWNgenes_GOID3)
+
+head(anot_GOanalDOWN3)
+
+# add Symbol annotation
+anot_GOanalDOWN3 <- inner_join(anot_GOanalDOWN3, Symbol_anot, by="ensembl")
+
+### Final coalesced tables
+# DE annotations collapse into single GO term
+anot_GOanalDOWN3 <- anot_GOanalDOWN3 %>%
+  group_by(go_id, GOname, ontology, FWER) %>%
+  summarise(DEGeneSymbols = toString(Symbol),)
+
+write.csv(anot_GOanalDOWN3, file="PAd_vs_PA_DOWN_GOterm_anal.txt")
+
+###########
+#KEGG pathway analysis with ClusterProfiler
+#http://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-kegg.html"
+
+BiocManager::install("clusterProfiler")
+library("clusterProfiler")
+
+
+## ANNOTATION DATA
+## Analysis requires Gene ID identifiers instead of Symbols :(
+## Trying to map below
+
+# Downloaded BioMart Annotation for Ensembl Genes 111 / Gg7 containing NCBI GeneID data
+# BioMart_ensembl111_Gg7_ncbi.txt
+# edited version (header and removal of "HGNC:" from identifier is BioMart_ensembl111_Gg7_ncbi_.csv
+# Unfortunatelly the Ensembl identifiers have changed from the version I was using :( 
+
+BiocManager::install("org.Gg.eg.db")
+library(org.Gg.eg.db)
+# Unfortunately this annotation already contains the new ENSGALG versions :(
+# trying conversions through symbols
+
+## select() interface:
+## Objects in this package can be accessed using the select() interface
+## from the AnnotationDbi package. See ?select for details.
+## Bimap interface:
+
+x <- org.Gg.egALIAS2EG
+reference <- toTable(x)
+dim(reference)
+#[1] 41414     2
+head(reference)
+colnames(reference) <- c("NCBI", "Symbol")
+
+head (reference)
+#geneID Symbol
+#1 373854   ODZ2
+#2 373854   TEN2
+#3 373854  TENM2
+#4 373885 cFz-10
+#5 373885  FZD10
+#6 373886   Fz-9
+dim(reference)
+#[1] 41414     2
+x <- unique(reference$geneID)
+length(x)
+#[1] 32181
+
+### ATTENTION: reference contains repeated entries...
+
+Full_anot <- read.table("Gg_annotation_manteia_biomart_merge.txt", header=TRUE)
+head(Full_anot)
+
+anot_KEGG <- left_join(Full_anot, reference, by="Symbol")
+head(anot_KEGG)
+
+### trying to correct annotation problem for the KEGG annotation below
+reference2 <- anot_KEGG[,c("NCBI","Symbol")]
+colnames(reference2) <- c("geneID", "Symbol") 
+dim(reference2)
+#[1] 20873     2
+x2 <- unique(reference2$geneID)
+length(x2)
+#[1] 13560
+## Improves but does not solve...
+
+###### KEGG ANALYSIS
+
+#Retrieving identifiers for KEGG analysis of UPREG in PAd
+
+#1A UpregPAd_vs_PAv
+UpregPAd_vs_PAv <- DE2_Gg_genesDOWN_list
+UpregPAd_vs_PAv_anot <- anot_KEGG[anot_KEGG$Gene.ID %in% UpregPAd_vs_PAv,]
+UpregPAd_vs_PAv_list <- UpregPAd_vs_PAv_anot$NCBI
+
+# 1B UpregPAd_vs_PA
+UpregPAd_vs_PA <- DE3_Gg_genesUP_list
+UpregPAd_vs_PA_anot <- anot_KEGG[anot_KEGG$Gene.ID %in% UpregPAd_vs_PA,]
+UpregPAd_vs_PA_list <- UpregPAd_vs_PA_anot$NCBI
+
+length(UpregPAd_vs_PA)
+
+# 1C Common UpregPAd_PAV_vs_PA
+Common <- intersect(UpregPAd_vs_PAv_list,UpregPAd_vs_PA_list)
+length(Common)
+#[1] 150
+
+
+## KEGG pathway over-representation analysis
+
+## ANALYSIS 1A UpregPAd_vs_PAv
+KEGG_UpregPAd_vs_PAv <- enrichKEGG(gene         = UpregPAd_vs_PAv_list,
+                 organism     = 'gga',
+                 pvalueCutoff = 0.05)
+
+write.csv(KEGG_UpregPAd_vs_PAv, file="KEGG_UpregPAd_vs_PAv.csv")
+
+## annotate KEGG enrichment result with Symbols
+# split geneID identifiers
+data1 <- as.data.frame(KEGG_UpregPAd_vs_PAv)
+data1_split <- separate_rows(data1, geneID, sep = "/")
+
+# merge with Symbol annotation
+colnames(reference) <- c("geneID", "Symbol") 
+data1_split_anot <- merge(data1_split,reference)
+
+# SYMBOL annotations collapse into single KEGG Pathway
+KEGG_UpregPAd_vs_PAv_anot <- data1_split_anot %>%
+  group_by(ID,Description,GeneRatio,BgRatio,pvalue,p.adjust,qvalue,Count) %>%
+  summarise(Symbol = toString(Symbol),)
+
+write.csv(KEGG_UpregPAd_vs_PAv_anot, file="KEGG_UpregPAd_vs_PAv_SYMBOL.csv")
+
+## ANALYSIS 1B UpregPAd_vs_PA
+
+KEGG_UpregPAd_vs_PA <- enrichKEGG(gene         = UpregPAd_vs_PA_list,
+                                   organism     = 'gga',
+                                   pvalueCutoff = 0.05)
+head(KEGG_UpregPAd_vs_PA)
+write.csv(KEGG_UpregPAd_vs_PA, file="KEGG_UpregPAd_vs_PA.csv")
+
+## annotate KEGG enrichment result with Symbols
+# split geneID identifiers
+data2 <- as.data.frame(KEGG_UpregPAd_vs_PA)
+data2_split <- separate_rows(data2, geneID, sep = "/")
+
+# merge with Symbol annotation
+colnames(reference) <- c("geneID", "Symbol") 
+data2_split_anot <- merge(data2_split,reference)
+
+# SYMBOL annotations collapse into single KEGG Pathway
+KEGG_UpregPAd_vs_PA_anot <- data2_split_anot %>%
+  group_by(ID,Description,GeneRatio,BgRatio,pvalue,p.adjust,qvalue,Count) %>%
+  summarise(Symbol = toString(Symbol),)
+
+write.csv(KEGG_UpregPAd_vs_PA_anot, file="KEGG_UpregPAd_vs_PA_SYMBOL.csv")
+
+## ANALYSIS 1C COMMON_UpregPAd_PAv_vs_PA
+
+KEGG_Common_UpregPAd_PAv_vs_PA <- enrichKEGG(gene         = Common,
+                                             organism     = 'gga',
+                                             pvalueCutoff = 0.05)
+head(KEGG_Common_UpregPAd_PAv_vs_PA)
+write.csv(KEGG_Common_UpregPAd_PAv_vs_PA, file="KEGG_CommonUpregPAd_PAv_vs_PA.csv")
+
+## annotate KEGG enrichment result with Symbols
+# split geneID identifiers
+data3 <- as.data.frame(KEGG_Common_UpregPAd_PAv_vs_PA)
+data3_split <- separate_rows(data3, geneID, sep = "/")
+
+# merge with Symbol annotation
+colnames(reference) <- c("geneID", "Symbol") 
+data3_split_anot <- merge(data3_split,reference)
+
+# SYMBOL annotations collapse into single KEGG Pathway
+KEGG_Common_UpregPAd_PAv_vs_PA_anot <- data3_split_anot %>%
+  group_by(ID,Description,GeneRatio,BgRatio,pvalue,p.adjust,qvalue,Count) %>%
+  summarise(Symbol = toString(Symbol),)
+
+write.csv(KEGG_Common_UpregPAd_PAv_vs_PA_anot, file="KEGG_Common_UpregPAd_PAv_vs_PA_SYMBOL.csv")
+
+
+#Retrieving identifiers for KEGG analysis of DOWNREG in PAd
+
+#2A UpregPAV_vs_PAd
+UpregPAV_vs_PAd <- DE2_Gg_genesUP_list
+UpregPAV_vs_PAd_anot <- anot_KEGG[anot_KEGG$Gene.ID %in% UpregPAV_vs_PAd,]
+UpregPAV_vs_PAd_list <- UpregPAV_vs_PAd_anot$NCBI
+length(UpregPAV_vs_PAd)
+#[1] 556
+
+# 2B UpregPA_vs_PAd
+UpregPA_vs_PAd <- DE3_Gg_genesDOWN_list
+UpregPA_vs_PAd_anot <- anot_KEGG[anot_KEGG$Gene.ID %in% UpregPA_vs_PAd,]
+UpregPA_vs_PAd_list <- UpregPA_vs_PAd_anot$NCBI
+
+length(UpregPA_vs_PAd)
+#[1] 423
+
+# 2C Common UpregPAv_PA_vs_PAd
+Common <- intersect(UpregPAV_vs_PAd_list,UpregPA_vs_PAd_list)
+length(Common)
+#[1] 53
+
+
+## KEGG pathway over-representation analysis
+
+## ANALYSIS 2A UpregPAV_vs_PAd
+KEGG_UpregPAV_vs_PAd <- enrichKEGG(gene         = UpregPAV_vs_PAd_list,
+                                   organism     = 'gga',
+                                   pvalueCutoff = 0.05)
+
+write.csv(KEGG_UpregPAV_vs_PAd, file="KEGG_UpregPAV_vs_PAd.csv")
+
+## annotate KEGG enrichment result with Symbols
+# split geneID identifiers
+data1 <- as.data.frame(KEGG_UpregPAV_vs_PAd)
+data1_split <- separate_rows(data1, geneID, sep = "/")
+
+# merge with Symbol annotation
+colnames(reference) <- c("geneID", "Symbol") 
+data1_split_anot <- merge(data1_split,reference)
+
+# SYMBOL annotations collapse into single KEGG Pathway
+KEGG_UpregPAV_vs_PAd_anot <- data1_split_anot %>%
+  group_by(ID,Description,GeneRatio,BgRatio,pvalue,p.adjust,qvalue,Count) %>%
+  summarise(Symbol = toString(Symbol),)
+
+write.csv(KEGG_UpregPAV_vs_PAd_anot, file="KEGG_UpregPAV_vs_PAd_SYMBOL.csv")
+
+## ANALYSIS 2B UpregPA_vs_PAd
+
+KEGG_UpregPA_vs_PAd <- enrichKEGG(gene         = UpregPA_vs_PAd_list,
+                                  organism     = 'gga',
+                                  pvalueCutoff = 0.05)
+head(KEGG_UpregPA_vs_PAd)
+write.csv(KEGG_UpregPA_vs_PAd, file="KEGG_UpregPA_vs_PAd.csv")
+
+## annotate KEGG enrichment result with Symbols
+# split geneID identifiers
+data2 <- as.data.frame(KEGG_UpregPA_vs_PAd)
+data2_split <- separate_rows(data2, geneID, sep = "/")
+
+# merge with Symbol annotation
+colnames(reference) <- c("geneID", "Symbol") 
+data2_split_anot <- merge(data2_split,reference)
+
+# SYMBOL annotations collapse into single KEGG Pathway
+KEGG_UpregPA_vs_PAd_anot <- data2_split_anot %>%
+  group_by(ID,Description,GeneRatio,BgRatio,pvalue,p.adjust,qvalue,Count) %>%
+  summarise(Symbol = toString(Symbol),)
+
+write.csv(KEGG_UpregPA_vs_PAd_anot, file="KEGG_UpregPA_vs_PAd_SYMBOL.csv")
+
+## ANALYSIS 2C COMMON_UpregPAv_PA_vs_PAd
+
+KEGG_Common_UpregPAv_PA_vs_PAd <- enrichKEGG(gene         = Common,
+                                             organism     = 'gga',
+                                             pvalueCutoff = 0.05)
+head(KEGG_Common_UpregPAv_PA_vs_PAd)
+write.csv(KEGG_Common_UpregPAv_PA_vs_PAd, file="KEGG_CommonUpregPAv_PA_vs_PAd.csv")
+
+## annotate KEGG enrichment result with Symbols
+# split geneID identifiers
+data3 <- as.data.frame(KEGG_Common_UpregPAv_PA_vs_PAd)
+data3_split <- separate_rows(data3, geneID, sep = "/")
+
+# merge with Symbol annotation
+colnames(reference) <- c("geneID", "Symbol") 
+data3_split_anot <- merge(data3_split,reference)
+
+# SYMBOL annotations collapse into single KEGG Pathway
+KEGG_Common_UpregPAv_PA_vs_PAd_anot <- data3_split_anot %>%
+  group_by(ID,Description,GeneRatio,BgRatio,pvalue,p.adjust,qvalue,Count) %>%
+  summarise(Symbol = toString(Symbol),)
+
+write.csv(KEGG_Common_UpregPAv_PA_vs_PAd_anot, file="KEGG_Common_UpregPAv_PA_vs_PAd_SYMBOL.csv")
+
+## Writing results to single Excel
+
+
+BiocManager::install("writexl")
+library(writexl)
+
+
+# identify dataframes
+sheet_names <- list(KEGG_UpregPAd_vs_PAv_anot, KEGG_UpregPAd_vs_PA_anot, KEGG_Common_UpregPAd_PAv_vs_PA_anot, KEGG_UpregPAV_vs_PAd_anot, KEGG_UpregPA_vs_PAd_anot, KEGG_Common_UpregPAv_PA_vs_PAd_anot)
+class(sheet_names)
+# Create an empty Excel workbook
+write_xlsx(sheet_names, path = "KEGG_analysis.xlsx")
+#sheet names added manually
+
+
