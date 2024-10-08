@@ -1,0 +1,933 @@
+### Helia's project - RECEPTOR-LIGAND INTERACTION ANALYSIS 
+### Ligand interactions with NicheNet 
+### April 19 2024
+### code corrections on August 2024
+### Based on NichNetanal_final.R clean code May 16th 2023 by MGC
+
+
+BiocManager::install('ComplexHeatmap')
+BiocManager::install('limma')
+
+require(devtools)
+install_github('saeyslab/nichenetr')
+#instalation crashes in the absence of prior packages
+
+#system.file(package='mco')
+#BiocManager::install('mco')
+#system.file(package='emoa')
+#BiocManager::install('emoa')
+
+#### ANALYSIS USING THE NICHENETR PROVIDED MATRICES - May 16th 2023
+
+### Following https://github.com/saeyslab/nichenetr/blob/master/vignettes/ligand_activity_geneset.md
+
+library(nichenetr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(limma)
+
+setwd("~/Documents/Research/Helia_Neves/Data_analysis")
+
+##### OUR DATASET 1
+
+### Sender: genes expressed in 3/4PA  > Full_Gg_norm_counts.txt
+### Receiver: DE genes between 3/4PP and 2PP >> UPREG in 3/4PP
+### Background: all genes expressed in 3/4PP > Cj_norm_counts.txt (to filter by 3/4PP)
+
+## loading ligand matrix
+ligand_target_matrix = readRDS("zenodo_data/ligand_target_matrix.rds")
+
+## Receiver data
+
+## to restart analysis
+
+# Cj_exp = read.csv("expressed_Cjgenes.csv", header=TRUE) ## altered august 2024 for content clarity
+Cj_exp = read.csv("expressed_3&4PP_Cjgenes.csv", header=TRUE)
+###
+
+Cj_norm_counts <- read.table("Cj_norm_counts.txt", header=TRUE, row.names =1)
+head(Cj_norm_counts)
+colnames(Cj_norm_counts) <- c("2PP_R1","3&4PP_R1","Pharynx_R1","2PP_R2","3&4PP_R2","Pharynx_R2","2PP_R3","3&4PP_R3","Pharynx_R3")
+
+Cj_norm_counts["ENSCJPG00005015720",]
+
+Cj_data <- Cj_norm_counts[,c("3&4PP_R1","3&4PP_R2","3&4PP_R3")]
+colnames(Cj_data) <-c("R1","R2","R3")
+Cj_data$exp <- rowMeans(Cj_data)
+head(Cj_data)
+Cj_data <- rownames_to_column(Cj_data, var="GeneID") 
+
+# Adding Gene Symbols
+Cj_annot <- read.table("Cj_biomart_annotation_mancor.txt", header=TRUE, sep=",", na.strings="")
+head(Cj_annot)
+tail(Cj_annot)
+colnames(Cj_annot) <- c("GeneID", "Symbol")
+Cj_annot_merge <- Cj_annot %>% mutate(Symbol = coalesce(Symbol,GeneID))
+head(Cj_annot_merge)
+tail(Cj_annot_merge)
+Cj_data <- inner_join(Cj_data, Cj_annot_merge, by = c( "GeneID" = "GeneID"))
+tail(Cj_data)
+
+dim(Cj_data)
+# [1] 11637     6
+
+# Filtering for min expression
+
+Cj_exp <- filter(Cj_data, exp>4)
+tail(Cj_exp)
+dim(Cj_exp)
+#[1] 7763    6
+
+## write_csv(Cj_exp, file = "expressed_Cjgenes.csv") ## altered august 2024 for content clarity
+write_csv(Cj_exp, file = "expressed_3&4PP_Cjgenes.csv")
+
+
+#########
+expressed_genes_receiver = Cj_exp$Symbol
+#########
+
+background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+head(background_expressed_genes)
+
+length(background_expressed_genes)
+#[1] 6491
+
+
+##Sender data
+
+Gg_norm_counts <- read.csv("2024_data/Gg_norm_count_table.csv", header=TRUE)
+head(Gg_norm_counts)
+Gg_norm_counts <- Gg_norm_counts[,2:12]
+colnames(Gg_norm_counts) <- c("GeneID", "PAv1",  "PAv2",  "PAv3",  "PAd_1",   "PA_1",    "PAd_2",   "PA_2",    "PAd_3",   "PA_3",    "Symbol" )
+
+Gg_data <- Gg_norm_counts[,c("GeneID", "Symbol", "PA_1","PA_2","PA_3")]
+
+## Adding mean expression - selects all columns except first two
+
+Gg_exp <- mutate(Gg_data, exp = rowMeans(select(Gg_data, -1:-2)))
+head(Gg_exp)
+
+
+# Filtering for min expression
+
+Gg_exp <- filter(Gg_exp, exp>4)
+
+dim(Gg_data)
+#[1] 12167     6
+dim(Gg_exp)
+#[1] 7898    6
+
+# write_csv(Gg_exp, file = "OmniNetworks/all_expressed_Gggenes_nichnet.csv") ## altered august 2024 for content clarity
+write_csv(Gg_exp, file = "OmniNetworks/PA_all_expressed_Gggenes_nichnet.csv")
+
+## to restart analysis
+# Gg_exp = read.csv("OmniNetworks/all_expressed_Gggenes_nichnet.csv", header=TRUE) ## altered august 2024 for content clarity
+Gg_exp = read.csv("OmniNetworks/PA_all_expressed_Gggenes_nichnet.csv", header=TRUE)
+
+#???Gg_data=Gg_exp
+
+#########
+expressed_genes_sender = Gg_exp$Symbol
+#########
+
+
+## Gene set of interest
+
+data <- read.csv("Cj_limma_secPPtoPPs_final.txt", header=TRUE)
+head(data)
+dim(data)
+# [1] 518   9
+summary(data) #518 DE genes with minimal FC and adjpval, Min.AveExpr:-0.9698 
+
+data <- data[,1:8]
+
+##correcting for manual annotations
+annot_data <- inner_join(data, Cj_annot_merge, by = c( "ID" = "GeneID"))
+head(annot_data)
+
+upreg_34PP <- annot_data[annot_data$logFC < 0,]
+
+#all_DE <- annot_data$Symbol
+
+upreg_34PP <- upreg_34PP$Symbol
+
+#########
+#geneset_oi = all_DE
+#########
+
+#########
+geneset_oi = upreg_34PP
+#########
+
+# Step 3: Define a set of potential ligands
+
+#As potentially active ligands, we will use ligands that are 1) expressed by 3/4PA  and 2) can bind a (putative) receptor expressed by 3/4PP cells. 
+#Putative ligand-receptor links were gathered from NicheNet’s ligand-receptor data sources.
+
+lr_network = readRDS("zenodo_data/lr_network.rds")
+
+# If wanted, users can remove ligand-receptor interactions that were predicted based on protein-protein interactions and only keep ligand-receptor interactions that are described in curated databases. To do this: uncomment following line of code:
+# lr_network = lr_network %>% filter(database != "ppi_prediction_go" & database != "ppi_prediction")
+
+ligands = lr_network %>% pull(from) %>% unique()
+expressed_ligands = intersect(ligands,expressed_genes_sender)
+length(expressed_ligands)
+# [1] 144
+
+#intersect(ligands,"WIF1")
+
+
+receptors = lr_network %>% pull(to) %>% unique()
+expressed_receptors = intersect(receptors,expressed_genes_receiver)
+length(expressed_receptors)
+# [1] 190
+
+# this part of the code basically identifies ligands and receptors expressed in each dataset
+# which are present in the lr_network
+
+lr_network_expressed = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) 
+head(lr_network_expressed)
+## # A tibble: 6 × 4
+## from   to     source         database
+## <chr>  <chr>  <chr>          <chr>   
+## 1 CXCL12 CXCR4  kegg_cytokines kegg    
+## 2 HGF    MET    kegg_cytokines kegg    
+## 3 TGFB2  TGFBR1 kegg_cytokines kegg    
+## 4 TGFB3  TGFBR1 kegg_cytokines kegg    
+## 5 BMP2   ACVR1  kegg_cytokines kegg    
+## 6 BMP2   BMPR2  kegg_cytokines kegg 
+
+#This ligand-receptor network contains the expressed ligand-receptor interactions. 
+# As potentially active ligands for the NicheNet analysis, we will consider the ligands from this network.
+
+potential_ligands = lr_network_expressed %>% pull(from) %>% unique()
+head(potential_ligands)
+## [1] "CXCL12" "HGF"    "TGFB2"  "TGFB3"  "BMP2"   "BMP7" 
+
+
+length(potential_ligands)
+# [1] 116
+
+##### Exporting receptor & ligand data for Helia###
+
+receptors<- subset(Cj_exp, Symbol %in% expressed_receptors)
+dim(receptors)
+receptors <- receptors[,5:6]
+write_csv(receptors, "2024_data/Nichenet_anal/34PP_receptors.csv")
+
+ligands<- subset(Gg_exp, Symbol %in% expressed_ligands)
+head(ligands)
+ligands <- select(Gg_exp, Symbol, exp)
+write_csv(ligands, "2024_data/Nichenet_anal/3PA_ligands.csv")
+
+
+
+#####
+
+
+# Step 4: Perform NicheNet’s ligand activity analysis on the gene set of interest
+
+ligand_activities = predict_ligand_activities(geneset = geneset_oi, background_expressed_genes = background_expressed_genes, ligand_target_matrix = ligand_target_matrix, potential_ligands = potential_ligands)
+ligand_activities %>% arrange(-pearson) 
+
+## # A tibble: 114 × 5
+## test_ligand auroc  aupr aupr_corrected pearson
+## <chr>       <dbl> <dbl>          <dbl>   <dbl>
+##1 SFRP2       0.704 0.0695         0.0467   0.127
+##2 BMP4        0.683 0.0543         0.0315   0.112
+##3 NPNT        0.677 0.0583         0.0354   0.111
+##4 GDF3        0.685 0.0587         0.0358   0.111
+##5 CXCL12      0.639 0.0570         0.0341   0.111
+##6 COL4A1      0.679 0.0565         0.0336   0.108
+##7 BMP5        0.718 0.0510         0.0281   0.107
+##8 SEMA5A      0.693 0.0550         0.0321   0.106
+##9 COPA        0.681 0.0565         0.0336   0.105
+##10 BMP7        0.689 0.0502         0.0273   0.103
+## # ℹ 106 more rows
+## # ℹ Use `print(n = ...)` to see more rows
+
+
+## this code was ran for top20 and top30
+best_upstream_ligands = ligand_activities %>% top_n(30, pearson) %>% arrange(-pearson) %>% pull(test_ligand)
+best_upstream_ligands = ligand_activities %>% top_n(20, pearson) %>% arrange(-pearson) %>% pull(test_ligand)
+
+
+
+length(best_upstream_ligands)
+#[1] 30
+# [1] "SFRP2"  "BMP4"   "NPNT"   "GDF3"   "CXCL12" "COL4A1" "BMP5"
+
+
+## top 30 ligands DE
+
+TopL_DE <- annot_data[annot_data$Symbol %in% best_upstream_ligands, ]
+dim(TopL_DE)
+# [1] 7 9
+TopL_DE[,c("Symbol","AveExpr")]
+##      Symbol  AveExpr
+## 89     TNC 5.874800
+## 102 SEMA5A 7.156061
+## 108  TGFB3 6.325800
+## 154 COL4A1 6.753668
+## 218  EFNB2 4.693916
+## 278   NPNT 5.859763
+## 444   JAM3 5.114682
+
+TopL <- Gg_data[Gg_data$Symbol %in% best_upstream_ligands, ]
+head(TopL)
+# [1] 30  5
+TopL[,c("Symbol","exp")]
+
+
+# show histogram of ligand activity scores
+p_hist_lig_activity = ggplot(ligand_activities, aes(x=pearson)) + 
+  geom_histogram(color="black", fill="darkorange")  + 
+  # geom_density(alpha=.1, fill="orange") +
+  geom_vline(aes(xintercept=min(ligand_activities %>% top_n(30, pearson) %>% pull(pearson))), color="red", linetype="dashed", linewidth=1) + 
+  labs(x="ligand activity (PCC)", y = "# ligands") +
+  theme_classic()
+p_hist_lig_activity
+
+#saved as "ligand_activity_anal1"
+
+# Step 5: Infer target genes of top-ranked ligands and visualize in a heatmap
+
+active_ligand_target_links_df = best_upstream_ligands %>% lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 250) %>% bind_rows()
+
+nrow(active_ligand_target_links_df)
+## [1] 251
+
+head(active_ligand_target_links_df)
+## # A tibble: 6 × 3
+## ligand target  weight
+## <chr>  <chr>    <dbl>
+##1 SFRP2  CXCR4   0.00175
+##2 SFRP2  EDN1    0.00152
+##3 SFRP2  ELAVL4  0.00182
+##4 SFRP2  EPHB1   0.00151
+##5 SFRP2  GALNT17 0.00226
+##6 SFRP2  GATA3   0.00175
+
+##  run with full dataset identical
+
+active_ligand_target_links = prepare_ligand_target_visualization(ligand_target_df = active_ligand_target_links_df, ligand_target_matrix = ligand_target_matrix, cutoff = 0.25)
+
+order_ligands = intersect(best_upstream_ligands, colnames(active_ligand_target_links)) %>% rev()
+order_targets = active_ligand_target_links_df$target %>% unique()
+vis_ligand_target = active_ligand_target_links[order_targets,order_ligands] %>% t()
+
+p_ligand_target_network = vis_ligand_target %>% 
+  make_heatmap_ggplot("Prioritized PA","DE genes in 3/4 PPs", 
+                      color = "purple",
+                      legend_position = "top", 
+                      x_axis_position = "top",
+                      legend_title = "Regulatory potential") + 
+  scale_fill_gradient2(low = "whitesmoke",  high = "purple", breaks = c(0,0.005,0.01)) + 
+  theme(axis.text.x = element_text(face = "italic"))
+
+p_ligand_target_network
+
+
+## Follow-up analysis 1: Ligand-receptor network inference for top-ranked ligands
+#which receptors of the receiver cell population (here: 3/4PP) can potentially bind to the prioritized ligands from the sender cell population (here: 34PA)
+
+# get the ligand-receptor network of the top-ranked ligands
+lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+
+# get the weights of the ligand-receptor interactions as used in the NicheNet model
+weighted_networks = readRDS("zenodo_data/weighted_networks.rds")
+lr_network_top_df = weighted_networks$lr_sig %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+
+# convert to a matrix
+lr_network_top_df = lr_network_top_df %>% spread("from","weight",fill = 0)
+lr_network_top_matrix = lr_network_top_df %>% select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df$to)
+
+# perform hierarchical clustering to order the ligands and receptors
+dist_receptors = dist(lr_network_top_matrix, method = "binary")
+hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+order_receptors = hclust_receptors$labels[hclust_receptors$order]
+
+dist_ligands = dist(lr_network_top_matrix %>% t(), method = "binary")
+hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+
+vis_ligand_receptor_network = lr_network_top_matrix[order_receptors, order_ligands_receptor]
+p_ligand_receptor_network = vis_ligand_receptor_network %>% t() %>% make_heatmap_ggplot("Prioritized PA-ligands","Receptors expressed by PP", color = "mediumvioletred", x_axis_position = "top",legend_title = "Prior interaction potential")
+p_ligand_receptor_network
+
+
+#August 2024
+# saved as Top30_ligand-receptor_heatmap_anal1_12082024
+# saved as Top20_ligand-receptor_heatmap_anal1_12082024 
+
+
+######## OUR DATASET 2
+
+### Sender: genes expressed in 2PAd  > Gg_norm_counts.txt (to filter by 2PAd) 
+### Receiver: DE genes between 3/4PP and 2PP >> upreg in 2PP!!
+### background: all genes expressed in 2PP > Cj_norm_counts.txt (to filter by 2PP)
+
+## loading ligand matrix ### loaded above
+ligand_target_matrix = readRDS("zenodo_data/ligand_target_matrix.rds")
+
+## Receiver data
+
+## to restart analysis
+Cj_exp = read.csv("expressed_2PP_Cjgenes.csv", header=TRUE)
+###
+
+### August 2024 - this code chunk is the same as used for anal1 above
+Cj_norm_counts <- read.table("Cj_norm_counts.txt", header=TRUE, row.names =1)
+head(Cj_norm_counts)
+colnames(Cj_norm_counts) <- c("2PP_R1","3&4PP_R1","Pharynx_R1","2PP_R2","3&4PP_R2","Pharynx_R2","2PP_R3","3&4PP_R3","Pharynx_R3")
+#####
+
+Cj_data <- Cj_norm_counts[,c("2PP_R1","2PP_R2","2PP_R3")]
+colnames(Cj_data) <-c("R1","R2","R3")
+Cj_data$exp <- rowMeans(Cj_data)
+head(Cj_data)
+Cj_data <- rownames_to_column(Cj_data, var="GeneID") 
+Cj_exp <- filter(Cj_data, exp>4)
+dim(Cj_data)
+dim(Cj_exp)
+
+# Adding Gene Symbols
+## On August 2024: These variables have been created above and the code here is pointing to the wrong file...
+
+#Cj_annot <- read.table("zenodo_data/Cj_biomart_annotation_mancor.txt", header=TRUE, sep=",", na.strings="")
+#head(Cj_annot)
+#tail(Cj_annot)
+#colnames(Cj_annot) <- c("GeneID", "Symbol")
+#Cj_annot_merge <- Cj_annot %>% mutate(Symbol = coalesce(Symbol,GeneID))
+#head(Cj_annot_merge)
+#tail(Cj_annot_merge)
+
+Cj_exp <- inner_join(Cj_exp, Cj_annot_merge, by = c( "GeneID" = "GeneID"))
+tail(Cj_exp)
+
+tail(Cj_data)
+summary(Cj_exp)
+
+#########
+expressed_genes_receiver = Cj_exp$Symbol
+#########
+
+background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+head(background_expressed_genes)
+
+length(background_expressed_genes)
+#[1] 6562
+
+
+write_csv(Cj_exp, file = "expressed_2PP_Cjgenes.csv")
+
+###
+
+
+##Sender data
+
+## to restart analysis
+Gg_exp = read.csv("OmniNetworks/2PAd_all_expressed_Gggenes_nichnet.csv", header=TRUE)
+###
+
+### August 2024 - this code chunk is the same as used for anal1 above
+Gg_norm_counts <- read.csv("2024_data/Gg_norm_count_table.csv", header=TRUE)
+head(Gg_norm_counts)
+Gg_norm_counts <- Gg_norm_counts[,2:12]
+colnames(Gg_norm_counts) <- c("GeneID", "PAv1",  "PAv2",  "PAv3",  "PAd_1",   "PA_1",    "PAd_2",   "PA_2",    "PAd_3",   "PA_3",    "Symbol" )
+####
+
+Gg_data <- Gg_norm_counts[,c("GeneID", "Symbol", "PAd_1","PAd_2","PAd_3")]
+tail(Gg_data)
+
+## Adding mean expression - selects all columns except first two
+
+Gg_exp <- mutate(Gg_data, exp = rowMeans(select(Gg_data, -1:-2)))
+head(Gg_exp)
+
+
+# Filtering for min expression
+
+Gg_exp <- filter(Gg_exp, exp>4)
+
+dim(Gg_data)
+#[1] 12167     6
+dim(Gg_exp)
+#[1] 7822    6
+
+write_csv(Gg_exp, file = "OmniNetworks/2PAd_all_expressed_Gggenes_nichnet.csv")
+
+
+
+#??Gg_data=Gg_exp
+
+
+#########
+expressed_genes_sender = Gg_exp$Symbol
+#########
+
+## Gene set of interest
+
+### August 2024: This code is the same as above
+data <- read.csv("Cj_limma_secPPtoPPs_final.txt", header=TRUE) 
+head(data)
+summary(data)
+data <- data[,1:8]
+##correcting for manual annotations
+annot_data <- inner_join(data, Cj_annot_merge, by = c( "ID" = "GeneID"))
+head(annot_data)
+###
+
+upreg_2PP <- annot_data[annot_data$logFC > 0,]
+
+all_DE <- annot_data$Symbol
+upreg_2PP <- upreg_2PP$Symbol
+
+#########
+geneset_oi = upreg_2PP
+#########
+
+# Step 3: Define a set of potential ligands
+
+#As potentially active ligands, we will use ligands that are 1) expressed by 3/4PA  and 2) can bind a (putative) receptor expressed by 3/4PP cells. 
+#Putative ligand-receptor links were gathered from NicheNet’s ligand-receptor data sources.
+
+lr_network = readRDS("zenodo_data/lr_network.rds")  ### loaded above
+
+
+# If wanted, users can remove ligand-receptor interactions that were predicted based on protein-protein interactions and only keep ligand-receptor interactions that are described in curated databases. To do this: uncomment following line of code:
+# lr_network = lr_network %>% filter(database != "ppi_prediction_go" & database != "ppi_prediction")
+
+ligands = lr_network %>% pull(from) %>% unique()   ### same as above
+expressed_ligands = intersect(ligands,expressed_genes_sender)
+length(expressed_ligands)
+# [1] 136
+
+
+receptors = lr_network %>% pull(to) %>% unique()   ### same as above
+expressed_receptors = intersect(receptors,expressed_genes_receiver)
+length(expressed_receptors)
+# [1] 196
+
+
+##### Exporting receptor & ligand data for Helia###
+receptors<- subset(Cj_exp, Symbol %in% expressed_receptors)
+head(receptors)
+receptors <- receptors[,5:6]
+write_csv(receptors, "2024_data/Nichenet_anal/2PP_receptors.csv")
+
+ligands<- subset(Gg_exp, Symbol %in% expressed_ligands)
+dim(ligands)
+
+ligands <- select(ligands, Symbol,exp)
+write_csv(ligands, "2024_data/Nichenet_anal/2PAd_ligands.csv")
+
+#####
+
+# this part of the code basically identifies ligands and receptors expressed in each dataset
+# which are present in the lr_network
+
+lr_network_expressed = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) 
+head(lr_network_expressed)
+## # A tibble: 6 × 4
+## from    to        source         database
+## <chr>   <chr>     <chr>          <chr>   
+## 1 HGF     MET       kegg_cytokines kegg    
+## 2 TNFSF10 TNFRSF11B kegg_cytokines kegg    
+## 3 TGFB2   TGFBR1    kegg_cytokines kegg    
+## 4 TGFB2   TGFBR2    kegg_cytokines kegg    
+## 5 TGFB3   TGFBR1    kegg_cytokines kegg    
+## 6 TGFB3   TGFBR2    kegg_cytokines kegg   
+
+#This ligand-receptor network contains the expressed ligand-receptor interactions. 
+# As potentially active ligands for the NicheNet analysis, we will consider the ligands from this network.
+
+#lr_network_expressed2 = lr_network2 %>% filter(from %in% expressed_ligands2 & to %in% expressed_receptors2) 
+#head(lr_network_expressed2)
+
+
+potential_ligands = lr_network_expressed %>% pull(from) %>% unique()
+head(potential_ligands)
+## [1] "HGF"     "TNFSF10" "TGFB2"   "TGFB3"   "CXCL12"  "CDH2"  
+length(potential_ligands)
+# [1] 109
+
+
+# Step 4: Perform NicheNet’s ligand activity analysis on the gene set of interest
+
+ligand_activities = predict_ligand_activities(geneset = geneset_oi, background_expressed_genes = background_expressed_genes, ligand_target_matrix = ligand_target_matrix, potential_ligands = potential_ligands)
+ligand_activities %>% arrange(-pearson) 
+
+## # A tibble: 106 × 5
+## test_ligand auroc  aupr aupr_corrected pearson
+## <chr>       <dbl> <dbl>          <dbl>   <dbl>
+## 1 SFRP2       0.662 0.0884         0.0442  0.126 
+## 2 BMP5        0.679 0.0829         0.0386  0.118 
+## 3 TGFB2       0.568 0.0886         0.0443  0.0943
+## 4 COL4A1      0.616 0.0739         0.0296  0.0894
+## 5 SEMA5A      0.623 0.0729         0.0287  0.0881
+## 6 COPA        0.618 0.0721         0.0279  0.0871
+## 7 PCDH1       0.611 0.0723         0.0280  0.0828
+## 8 TGFB3       0.593 0.0728         0.0286  0.0826
+## 9 NLGN2       0.609 0.0721         0.0278  0.0820
+## 10 TNC         0.610 0.0681         0.0238  0.0804
+# ℹ 99 more rows
+# ℹ Use `print(n = ...)` to see more rows
+
+
+### This code was ran with the option of top30 and top 20
+best_upstream_ligands = ligand_activities %>% top_n(20, pearson) %>% arrange(-pearson) %>% pull(test_ligand)
+head(best_upstream_ligands)
+
+# [1] "SFRP2"  "BMP5"   "COL4A1" "SEMA5A" "COPA"   "PCDH1" 
+
+# show histogram of ligand activity scores
+p_hist_lig_activity = ggplot(ligand_activities, aes(x=pearson)) + 
+  geom_histogram(color="black", fill="darkorange")  + 
+  # geom_density(alpha=.1, fill="orange") +
+  geom_vline(aes(xintercept=min(ligand_activities %>% top_n(20, pearson) %>% pull(pearson))), color="red", linetype="dashed", size=1) + 
+  labs(x="ligand activity (PCC)", y = "# ligands") +
+  theme_classic()
+p_hist_lig_activity
+
+# Step 5: Infer target genes of top-ranked ligands and visualize in a heatmap
+
+active_ligand_target_links_df = best_upstream_ligands %>% lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 250) %>% bind_rows()
+
+nrow(active_ligand_target_links_df)
+## [1] 223
+head(active_ligand_target_links_df)
+## # A tibble: 6 × 3
+## ligand target  weight
+## <chr>  <chr>    <dbl>
+## 1 SFRP2  AXIN2  0.00172
+## 2 SFRP2  EMX2   0.00175
+## 3 SFRP2  LEF1   0.00192
+## 4 SFRP2  MSX1   0.00152
+## 5 SFRP2  NR2F1  0.00165
+## 6 SFRP2  NTM    0.00158
+
+active_ligand_target_links = prepare_ligand_target_visualization(ligand_target_df = active_ligand_target_links_df, ligand_target_matrix = ligand_target_matrix, cutoff = 0.25)
+
+order_ligands = intersect(best_upstream_ligands, colnames(active_ligand_target_links)) %>% rev()
+order_targets = active_ligand_target_links_df$target %>% unique()
+vis_ligand_target = active_ligand_target_links[order_targets,order_ligands] %>% t()
+
+p_ligand_target_network = vis_ligand_target %>% make_heatmap_ggplot("Prioritized PAd","DE genes in 2PPs", color = "purple",legend_position = "top", x_axis_position = "top",legend_title = "Regulatory potential") + scale_fill_gradient2(low = "whitesmoke",  high = "purple", breaks = c(0,0.005,0.01)) + theme(axis.text.x = element_text(face = "italic"))
+
+p_ligand_target_network
+
+
+## Follow-up analysis 1: Ligand-receptor network inference for top-ranked ligands
+#which receptors of the receiver cell population (here: 3/4PP) can potentially bind to the prioritized ligands from the sender cell population (here: 3/4PP)
+
+# get the ligand-receptor network of the top-ranked ligands
+lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+
+# get the weights of the ligand-receptor interactions as used in the NicheNet model
+weighted_networks = readRDS("zenodo_data/weighted_networks.rds") ### Loaded above
+
+lr_network_top_df = weighted_networks$lr_sig %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+
+# convert to a matrix
+lr_network_top_df = lr_network_top_df %>% spread("from","weight",fill = 0)
+lr_network_top_matrix = lr_network_top_df %>% select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df$to)
+
+# perform hierarchical clustering to order the ligands and receptors
+dist_receptors = dist(lr_network_top_matrix, method = "binary")
+hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+order_receptors = hclust_receptors$labels[hclust_receptors$order]
+
+dist_ligands = dist(lr_network_top_matrix %>% t(), method = "binary")
+hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+
+vis_ligand_receptor_network = lr_network_top_matrix[order_receptors, order_ligands_receptor]
+p_ligand_receptor_network = vis_ligand_receptor_network %>% t() %>% make_heatmap_ggplot("Prioritized PAd-ligands","Receptors expressed by 2PP", color = "mediumvioletred", x_axis_position = "top",legend_title = "Prior interaction potential")
+p_ligand_receptor_network
+
+#August 2024
+# saved as Top30_ligand-receptor_heatmap_anal2_12082024 with width 1200px
+# saved as Top20_ligand-receptor_heatmap_anal2_12082024 with height 400px
+
+
+##### new section included in 2024
+
+######## OUR DATASET 3 
+
+### Sender: genes expressed in 2PAv  > Full_Gg_norm_counts.txt (to filter by 2PAv) 
+### Receiver: DE genes between 3/4PP and 2PP >> upreg in 2PP!!  >> Same as anal2
+### background: all genes expressed in 2PP > Cj_norm_counts.txt (to filter by 2PP) >> Same as anal2
+
+## loading ligand matrix
+ligand_target_matrix = readRDS("zenodo_data/ligand_target_matrix.rds")  ### loaded above
+
+## Receiver data
+
+### Same as for anal2 > see above for restarting files
+Cj_norm_counts <- read.table("Cj_norm_counts.txt", header=TRUE, row.names =1)
+head(Cj_norm_counts)
+colnames(Cj_norm_counts) <- c("2PP_R1","3&4PP_R1","Pharynx_R1","2PP_R2","3&4PP_R2","Pharynx_R2","2PP_R3","3&4PP_R3","Pharynx_R3")
+Cj_data <- Cj_norm_counts[,c("2PP_R1","2PP_R2","2PP_R3")]
+colnames(Cj_data) <-c("R1","R2","R3")
+Cj_data$exp <- rowMeans(Cj_data)
+head(Cj_data)
+Cj_data <- rownames_to_column(Cj_data, var="GeneID") 
+Cj_exp <- filter(Cj_data, exp>4)
+dim(Cj_data)
+dim(Cj_exp)
+
+# Adding Gene Symbols
+
+Cj_annot <- read.table("Cj_biomart_annotation_mancor.txt", header=TRUE, sep=",", na.strings="")
+head(Cj_annot)
+tail(Cj_annot)
+colnames(Cj_annot) <- c("GeneID", "Symbol")
+Cj_annot_merge <- Cj_annot %>% mutate(Symbol = coalesce(Symbol,GeneID))
+head(Cj_annot_merge)
+tail(Cj_annot_merge)
+
+Cj_exp <- inner_join(Cj_exp, Cj_annot_merge, by = c( "GeneID" = "GeneID"))
+tail(Cj_exp)
+
+tail(Cj_data)
+summary(Cj_exp)
+
+#########
+expressed_genes_receiver = Cj_exp$Symbol
+#########
+
+background_expressed_genes = expressed_genes_receiver %>% .[. %in% rownames(ligand_target_matrix)]
+head(background_expressed_genes)
+
+length(background_expressed_genes)
+#[1] 6562
+
+##Sender data
+
+## August 2024 This code is (almost) the same as above (issue on colnames) >> see above for restarting file
+Gg_norm_counts <- read.csv("2024_data/Gg_norm_count_table.csv", header=TRUE)
+head(Gg_norm_counts)
+Gg_norm_counts <- Gg_norm_counts[,2:12]
+colnames(Gg_norm_counts) <- c("GeneID", "PAv_1",  "PAv_2",  "PAv_3",  "PAd_1",   "PA_1",    "PAd_2",   "PA_2",    "PAd_3",   "PA_3",    "Symbol" )
+###
+
+## August 2024 columns names introduced above not compatible with prior anal, replaced by line below
+#Gg_data <- Gg_norm_counts[,c("GeneID", "Symbol", "PAv_1","PAv_2","PAv_3")]
+
+Gg_data <- Gg_norm_counts[,c("GeneID", "Symbol", "PAv1","PAv2","PAv3")]
+tail(Gg_data)
+
+## Adding mean expression - selects all columns except first two
+
+Gg_exp <- mutate(Gg_data, exp = rowMeans(select(Gg_data, -1:-2)))
+head(Gg_exp)
+
+
+# Filtering for min expression
+
+Gg_exp <- filter(Gg_exp, exp>4)
+
+dim(Gg_data)
+#[1] 12167     6
+dim(Gg_exp)
+#[1] 7829    6
+
+#write_csv(Gg_exp, file = "OmniNetworks/all_expressed_Gggenes_nichnet.csv")
+
+## to restart analysis
+#Gg_exp = read.csv("OmniNetworks/all_expressed_Gggenes_nichnet.csv", header=TRUE)
+
+#??Gg_data=Gg_exp
+
+
+#########
+expressed_genes_sender = Gg_exp$Symbol
+#########
+
+## Gene set of interest
+
+## This code is the same as for anal2
+data <- read.csv("Cj_limma_secPPtoPPs_final.txt", header=TRUE)
+head(data)
+summary(data)
+data <- data[,1:8]
+##correcting for manual annotations
+annot_data <- inner_join(data, Cj_annot_merge, by = c( "ID" = "GeneID"))
+head(annot_data)
+
+upreg_2PP <- annot_data[annot_data$logFC > 0,]
+
+#all_DE <- annot_data$Symbol
+upreg_2PP <- upreg_2PP$Symbol
+
+#########
+geneset_oi = upreg_2PP
+#########
+
+# Step 3: Define a set of potential ligands
+
+#As potentially active ligands, we will use ligands that are 1) expressed by 3/4PA  and 2) can bind a (putative) receptor expressed by 3/4PP cells. 
+#Putative ligand-receptor links were gathered from NicheNet’s ligand-receptor data sources.
+
+lr_network = readRDS("zenodo_data/lr_network.rds") ## loaded above
+
+#lr_network2 = readRDS("zenodo_data/lr_network.rds")
+
+# If wanted, users can remove ligand-receptor interactions that were predicted based on protein-protein interactions and only keep ligand-receptor interactions that are described in curated databases. To do this: uncomment following line of code:
+# lr_network = lr_network %>% filter(database != "ppi_prediction_go" & database != "ppi_prediction")
+
+ligands = lr_network %>% pull(from) %>% unique() ## as above
+expressed_ligands = intersect(ligands,expressed_genes_sender)
+length(expressed_ligands)
+# [1] 130
+
+
+receptors = lr_network %>% pull(to) %>% unique() ## as above
+expressed_receptors = intersect(receptors,expressed_genes_receiver)
+length(expressed_receptors)
+# [1] 196
+
+
+
+##### Exporting receptor & ligand data for Helia###
+receptors<- subset(Cj_exp, Symbol %in% expressed_receptors)
+dim(receptors)
+receptors <- receptors[,5:6]
+write_csv(receptors, "2024_data/Nichenet_anal/2PP_receptors_anal3.csv")
+
+ligands<- subset(Gg_exp, Symbol %in% expressed_ligands)
+head(ligands)
+ligands <- select(ligands, Symbol, exp)
+write_csv(ligands, "2024_data/Nichenet_anal/2PAd_ligands_anal3.csv")
+
+#####
+
+# this part of the code basically identifies ligands and receptors expressed in each dataset
+# which are present in the lr_network
+
+lr_network_expressed = lr_network %>% filter(from %in% expressed_ligands & to %in% expressed_receptors) 
+head(lr_network_expressed)
+## # A tibble: 6 × 4
+## from    to        source         database
+## <chr>   <chr>     <chr>          <chr>   
+## 1 HGF     MET       kegg_cytokines kegg    
+## 2 TNFSF10 TNFRSF11B kegg_cytokines kegg    
+## 3 TGFB2   TGFBR1    kegg_cytokines kegg    
+## 4 TGFB2   TGFBR2    kegg_cytokines kegg    
+## 5 TGFB3   TGFBR1    kegg_cytokines kegg    
+## 6 TGFB3   TGFBR2    kegg_cytokines kegg   
+
+#This ligand-receptor network contains the expressed ligand-receptor interactions. 
+# As potentially active ligands for the NicheNet analysis, we will consider the ligands from this network.
+
+#lr_network_expressed2 = lr_network2 %>% filter(from %in% expressed_ligands2 & to %in% expressed_receptors2) 
+#head(lr_network_expressed2)
+
+
+potential_ligands = lr_network_expressed %>% pull(from) %>% unique()
+head(potential_ligands)
+## [1] "HGF"     "TNFSF10" "TGFB2"   "TGFB3"   "CXCL12"  "CDH2"  
+length(potential_ligands)
+# [1] 105
+
+# Step 4: Perform NicheNet’s ligand activity analysis on the gene set of interest
+
+ligand_activities = predict_ligand_activities(geneset = geneset_oi, background_expressed_genes = background_expressed_genes, ligand_target_matrix = ligand_target_matrix, potential_ligands = potential_ligands)
+ligand_activities %>% arrange(-pearson) 
+
+## # A tibble: 106 × 5
+## test_ligand auroc  aupr aupr_corrected pearson
+## <chr>       <dbl> <dbl>          <dbl>   <dbl>
+## 1 SFRP2       0.662 0.0884         0.0442  0.126 
+## 2 BMP5        0.679 0.0829         0.0386  0.118 
+## 3 TGFB2       0.568 0.0886         0.0443  0.0943
+## 4 GDF3        0.605 0.0766         0.0324  0.0906
+## 5 COL4A1      0.616 0.0739         0.0296  0.0894
+## 6 SEMA5A      0.623 0.0729         0.0287  0.0881
+## 7 COPA        0.618 0.0721         0.0279  0.0871
+## 8 PCDH1       0.611 0.0723         0.0280  0.0828
+## 9 TGFB3       0.593 0.0728         0.0286  0.0826
+## 10 TNC         0.610 0.0681         0.0238  0.0804
+# ℹ 95 more rows
+# ℹ Use `print(n = ...)` to see more rows
+
+
+## this code was ran for top30 and top20
+best_upstream_ligands = ligand_activities %>% top_n(20, pearson) %>% arrange(-pearson) %>% pull(test_ligand)
+best_upstream_ligands = ligand_activities %>% top_n(30, pearson) %>% arrange(-pearson) %>% pull(test_ligand)
+head(best_upstream_ligands)
+
+# [1] "SFRP2"  "BMP5"   "TGFB2"  "GDF3"   "COL4A1" "SEMA5A"
+
+# show histogram of ligand activity scores
+p_hist_lig_activity = ggplot(ligand_activities, aes(x=pearson)) + 
+  geom_histogram(color="black", fill="darkorange")  + 
+  # geom_density(alpha=.1, fill="orange") +
+  geom_vline(aes(xintercept=min(ligand_activities %>% top_n(20, pearson) %>% pull(pearson))), color="red", linetype="dashed", size=1) + 
+  labs(x="ligand activity (PCC)", y = "# ligands") +
+  theme_classic()
+p_hist_lig_activity
+
+# Step 5: Infer target genes of top-ranked ligands and visualize in a heatmap
+
+active_ligand_target_links_df = best_upstream_ligands %>% lapply(get_weighted_ligand_target_links,geneset = geneset_oi, ligand_target_matrix = ligand_target_matrix, n = 250) %>% bind_rows()
+
+nrow(active_ligand_target_links_df)
+## [1] 232
+head(active_ligand_target_links_df)
+## # A tibble: 6 × 3
+## ligand target  weight
+## <chr>  <chr>    <dbl>
+## 1 SFRP2  AXIN2  0.00172
+## 2 SFRP2  EMX2   0.00175
+## 3 SFRP2  LEF1   0.00192
+## 4 SFRP2  MSX1   0.00152
+## 5 SFRP2  NR2F1  0.00165
+## 6 SFRP2  NTM    0.00158
+
+active_ligand_target_links = prepare_ligand_target_visualization(ligand_target_df = active_ligand_target_links_df, ligand_target_matrix = ligand_target_matrix, cutoff = 0.25)
+
+order_ligands = intersect(best_upstream_ligands, colnames(active_ligand_target_links)) %>% rev()
+order_targets = active_ligand_target_links_df$target %>% unique()
+vis_ligand_target = active_ligand_target_links[order_targets,order_ligands] %>% t()
+
+p_ligand_target_network = vis_ligand_target %>% make_heatmap_ggplot("Prioritized PAv","DE genes in 2PPs", color = "purple",legend_position = "top", x_axis_position = "top",legend_title = "Regulatory potential") + scale_fill_gradient2(low = "whitesmoke",  high = "purple", breaks = c(0,0.005,0.01)) + theme(axis.text.x = element_text(face = "italic"))
+
+p_ligand_target_network
+
+
+## Follow-up analysis 1: Ligand-receptor network inference for top-ranked ligands
+#which receptors of the receiver cell population (here: 3/4PP) can potentially bind to the prioritized ligands from the sender cell population (here: 3/4PP)
+
+# get the ligand-receptor network of the top-ranked ligands
+lr_network_top = lr_network %>% filter(from %in% best_upstream_ligands & to %in% expressed_receptors) %>% distinct(from,to)
+best_upstream_receptors = lr_network_top %>% pull(to) %>% unique()
+
+# get the weights of the ligand-receptor interactions as used in the NicheNet model
+weighted_networks = readRDS("zenodo_data/weighted_networks.rds")
+lr_network_top_df = weighted_networks$lr_sig %>% filter(from %in% best_upstream_ligands & to %in% best_upstream_receptors)
+
+# convert to a matrix
+lr_network_top_df = lr_network_top_df %>% spread("from","weight",fill = 0)
+lr_network_top_matrix = lr_network_top_df %>% select(-to) %>% as.matrix() %>% magrittr::set_rownames(lr_network_top_df$to)
+
+# perform hierarchical clustering to order the ligands and receptors
+dist_receptors = dist(lr_network_top_matrix, method = "binary")
+hclust_receptors = hclust(dist_receptors, method = "ward.D2")
+order_receptors = hclust_receptors$labels[hclust_receptors$order]
+
+dist_ligands = dist(lr_network_top_matrix %>% t(), method = "binary")
+hclust_ligands = hclust(dist_ligands, method = "ward.D2")
+order_ligands_receptor = hclust_ligands$labels[hclust_ligands$order]
+
+vis_ligand_receptor_network = lr_network_top_matrix[order_receptors, order_ligands_receptor]
+p_ligand_receptor_network = vis_ligand_receptor_network %>% t() %>% make_heatmap_ggplot("Prioritized PAv-ligands","Receptors expressed by 2PP", color = "mediumvioletred", x_axis_position = "top",legend_title = "Prior interaction potential")
+p_ligand_receptor_network
+
+
+#August 2024
+# saved as Top30_ligand-receptor_heatmap_anal3_12082024 with width 1200x500px
+# saved as Top20_ligand-receptor_heatmap_anal3_12082024 with width 900
