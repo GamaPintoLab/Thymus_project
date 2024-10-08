@@ -1,0 +1,159 @@
+#!/usr/bin/perl -w
+use warnings;
+use strict;
+#this script was developd by A.J.Amaral 20/11/2008
+#and is published in Amaral AJ, Brito FF, Chobanyan T, Yoshikawa S, Yokokura T, Van Vactor D, et al. 
+#Quality assessment and control of tissue specific RNA-seq libraries of Drosophila transgenic RNAi models. 
+#Front Genet. 2014 Mar 5;5. 
+#this script is to filter sequences from *online.fastq files
+#sequences with Ns are counted and printed to an output file Ns.txt
+#sequences with homopymers 15_30 bp are counted and printed to an output file *homo.txt
+# a files with all the counts is created *counts_N_homo.txt
+#a file with the filtered sequences is created *_filtered.txt
+
+#USAGE: perl filter_oneline_N_homo.pl <name *oneline:fastq 15 bp file> .. <name *oneline:fastq 30 bp file> 
+
+
+
+
+#open error log file
+open (STDERR,">standard_error6.txt");
+
+my @files=($ARGV[0]); #,$ARGV[1],$ARGV[2],$ARGV[3],$ARGV[4],$ARGV[5],$ARGV[6],$ARGV[7],$ARGV[8],$ARGV[9], $ARGV[10],$ARGV[11],$ARGV[12],$ARGV[13],$ARGV[14],$ARGV[15]);
+#print "infile: $infile\n";
+
+### debugging ###
+#print "@files $ARGV[0] $ARGV[1] $ARGV[2] $ARGV[3]\n";
+### debugging ###
+
+foreach my $files(@files){
+    #count variables
+    my $dotsum15=0;
+    my $Nsum15=0;
+    my $homoA15=0;
+    my $homoC15=0;
+    my $homoT15=0;
+    my $homoG15=0;
+    my $lowQS15=0;
+    my $filtered15=0;
+    my $infile15=$files;
+    
+    ### debugging ###
+    #print "$ARGV[1]\n";
+    #print "$infile15\n";
+    #print "_counts_N_homo.txt\n";
+    
+    #print "$ARGV[1] $infile15 _counts_N_homo.txt\n";
+    ### debugging ###
+
+    open (QUAL15,"<$infile15") or die "Can't open $infile15: $!\n";
+    #open output files for reads 15 bp
+    # files with counts of Ns and homo
+    my $countfile15=$ARGV[1].$infile15."_counts_N_homo.txt";
+    open(COUNT15,">$countfile15") or die "Can't open $countfile15: $!\n";
+    #open file with read 15 bp with Ns
+    my $N_file15=$ARGV[1].$infile15."_with_Ns.txt";
+    open(N15,">$N_file15")or die "Can't open $N_file15: $!\n";
+    #open file with read 15 bp with homopolymers
+    my $homo15=$ARGV[1].$infile15."_with_homo.txt";
+    open(HOMO15,">$homo15") or die "Can't open $homo15: $!\n";
+    #open file to write 15 bp reads that pass the filters
+    my $filtered15=$ARGV[1].$infile15."_filtered.txt";
+    open(FILTER15, ">$filtered15") or die "Can't open $filtered15: $!\n";
+    
+    #in this loop presence of sequences with Ns and homos is checked.
+    #these sequences are writen to a separate file
+    #a file with the counts of these sequences is created
+    # a file with the sequence passing these filters plus the transformation qs into numbers and the average of qs in the sequence
+    ### debugging ###
+    while (defined (my $line15=<QUAL15>)){
+	$line15 =~ s/ +/ /;
+	my @fastq15=split(" ",$line15);
+	# print "$line15\n";
+	my $id15=$fastq15[0];
+	my $seq15=$fastq15[1];
+	my $qs15=$fastq15[2];
+	# print "id=  $id15 \n";
+	# print "seq= $seq15 \n";
+	# print "qs=  $qs15 \n";
+
+
+    ### debugging ###
+
+	#sequence is checked for bases not called("." or N), and homopolymers A,C,T,G (minimum half of sequence length)
+	#the sums of these ocurrences are also calculated for statistics report
+	if ($seq15=~/\.{1}/){
+	    ++$dotsum15;
+	    next;
+	    
+	}
+	if ($seq15=~/N{1}/){
+	    ++$Nsum15;
+	    print N15 "$line15\n";
+	    next;
+	}
+	
+	if ($seq15=~/A{45,90}/){
+	    ++$homoA15;
+	    print HOMO15 "$line15\n";
+	    next;
+	}
+	
+	if ($seq15=~/C{45,90}/){
+	    ++$homoC15;
+	    print HOMO15 "$line15\n";
+	    next;
+	}
+	
+	if ($seq15=~/T{45,90}/){
+	    ++$homoT15;
+	    print HOMO15 "$line15\n";
+	    next;
+	}
+	
+	if ($seq15=~/G{45,90}/){
+	    ++$homoG15;
+	    print HOMO15 "$line15\n";
+	    next;
+	}
+	#if sequence starts with motif and is free of long homopolymers, QS are translated from ascii into numbers
+	else {
+	    my @QS= split('', $qs15);
+	    my @phred=();
+	    my $total=0;
+	 		foreach (my $j=0;$j<@QS;++$j){
+			    my $value=ord($QS[$j])-64;
+			    $total+=$value;
+			    push(@phred, $value);
+			    #results are printed to first output file: id"\t"seq"\t"id"\t"QSascii"\t"QSnumbers
+		        }
+	    my $length=@phred;
+	    #print @phred; 
+	    my $average_b=$total/$length;
+	    if ($average_b>=30){
+		#print "$id15\n";
+		
+		#print "$id15\n";
+		#print FILTER15 "$id15\t$seq_trim\t$qs15_trim\t@phred_trim\t$average\t"."trimmed\n";
+		++$filtered15;
+		print FILTER15 "$id15\t$seq15\t$qs15\t$average_b\n";
+	    } else {++$lowQS15;}
+	}
+    }
+print COUNT15 "Uncalled bases: $dotsum15 '.' \t or $Nsum15 'N'
+               Homopolymers:
+                      \t\t AAA $homoA15
+                      \t\t CCC $homoC15
+                      \t\t TTT $homoT15
+                      \t\t GGG $homoG15
+               Low QS: $lowQS15
+               Filtered: $filtered15\n";
+close N15;
+close HOMO15;
+close FILTER15;
+close COUNT15;
+close QUAL15;
+}
+
+close STDERR;
+exit;
